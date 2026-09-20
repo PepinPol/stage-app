@@ -119,7 +119,8 @@ with tab1:
                         "Statut": "À postuler",
                         "Texte Offre": offer_text,
                         "Résumé IA": "",
-                        "Entretien IA": ""
+                        "Entretien IA": "",
+                        "Lettre de Motivation": ""
                     }
                     
                     new_df = pd.DataFrame([new_row])
@@ -145,7 +146,7 @@ with tab2:
     try:
         df_tracker = conn_tab2.read(dtype=str).fillna("")
         
-        for col in ["Texte Offre", "Résumé IA", "Entretien IA", "Entreprise", "Poste", "Statut"]:
+        for col in ["Texte Offre", "Résumé IA", "Entretien IA", "Lettre de Motivation", "Entreprise", "Poste", "Statut"]:
             if col not in df_tracker.columns:
                 df_tracker[col] = ""
 
@@ -190,7 +191,7 @@ with tab2:
 
             st.markdown("---")
             
-            col_res, col_ent = st.columns(2)
+            col_res, col_ent, col_lm = st.columns(3)
             
             with col_res:
                 st.markdown("<h4 style='text-align: center;'>Résumé</h4>", unsafe_allow_html=True)
@@ -232,6 +233,52 @@ with tab2:
                             conn_tab2.update(data=df_tracker)
                             st.cache_data.clear()
                             st.rerun()
+                            
+            with col_lm:
+                st.markdown("<h4 style='text-align: center;'>Lettre</h4>", unsafe_allow_html=True)
+                current_lm = row_data.get('Lettre de Motivation', '').strip()
+                
+                if current_lm:
+                    with st.expander("Voir la lettre"):
+                        st.markdown(current_lm)
+                else:
+                    if st.button("📝 Générer", key="btn_lm", use_container_width=True):
+                        with st.spinner("Rédaction..."):
+                            prompt_lm = f"""
+                            Agis comme un expert en recrutement Produit. À partir de l'offre ci-dessous, rédige 2 éléments pour compléter la lettre de motivation d'un candidat en double diplôme Ingénierie/Management :
+                            1. "paragraphe_vous" : 2 à 3 phrases expliquant pourquoi la mission de l'entreprise, son produit ou ses défis tech l'attirent.
+                            2. "phrase_nous" : 1 phrase percutante reliant ses compétences (delivery, gestion de projet) et le besoin de l'offre.
+                            Renvoie UNIQUEMENT un JSON valide avec ces deux clés. Offre : {row_data.get('Texte Offre')}
+                            """
+                            try:
+                                resp_lm = model.generate_content(prompt_lm)
+                                raw_json = resp_lm.text.replace('```json', '').replace('```', '').strip()
+                                dynamic_parts = json.loads(raw_json)
+                                
+                                lettre_finale = f"""**Objet :** Candidature pour le stage de {row_data.get('Poste')}
+
+Madame, Monsieur,
+
+Actuellement étudiant en double diplôme Ingénieur/Manager à l'INSA Rennes et Audencia, je suis à la recherche d'un stage de 6 mois à Paris pour janvier/février 2027. C'est avec un grand enthousiasme que je vous soumets ma candidature.
+
+{dynamic_parts.get("paragraphe_vous", "")}
+
+Mon profil hybride me permet de faire naturellement le pont entre les enjeux business et les défis techniques. Ma formation en ingénierie à l'INSA Rennes m'a doté d'un fort esprit analytique, tandis que mon Master à Audencia m'a apporté une maîtrise solide de la stratégie produit, des méthodologies agiles (Scrum) et du Go-to-Market. Profondément "hands-on", je conçois et code mes propres produits technologiques. J'ai notamment géré le cycle de vie complet d'une application mobile développée avec Flutter, et j'ai architecturé une application web en Python intégrant l'API Google Gemini.
+
+Le métier exige un fort leadership pour aligner les parties prenantes. En tant que Président du bureau des étudiants, j'ai supervisé 1 300 membres et géré un budget d'un million d'euros, menant des projets d'envergure à leur terme. {dynamic_parts.get("phrase_nous", "")}
+
+Je serais ravi d'échanger avec vous sur la vision de votre produit et de démontrer comment mon profil technique et business pourrait contribuer à vos succès.
+
+Veuillez agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
+
+**Pol CARTRON**
+"""
+                                df_tracker.at[selected_idx, 'Lettre de Motivation'] = lettre_finale
+                                conn_tab2.update(data=df_tracker)
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur LM : {e}")
                             
             with st.expander("Texte original"):
                 st.write(row_data.get('Texte Offre', 'Aucun texte.'))
