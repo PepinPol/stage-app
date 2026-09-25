@@ -11,20 +11,83 @@ st.set_page_config(page_title="Tracker de Stage PM", layout="centered")
 st.markdown("<h1 style='text-align: center;'>Espace de Recherche PM/PO</h1>", unsafe_allow_html=True)
 
 # --- INITIALISATION DE L'IA ---
+gemini_configured = False
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     gemini_configured = True
-    model = genai.GenerativeModel('gemini-3.5-flash') 
 except KeyError:
-    gemini_configured = False
     st.error("La clé GEMINI_API_KEY n'est pas trouvée.")
 
-# --- INITIALISATION DES PRÉRÉGLAGES ---
-if "presets" not in st.session_state:
-    st.session_state.presets = {
+# Liste ordonnée de modèles avec bascule automatique (Fallback) en cas d'erreur 429
+MODELS_FALLBACK_LIST = [
+    "gemini-3.5-flash",       # Modèle par défaut
+    "gemini-3.5-flash-lite",  # 15 RPM / 500 RPD (Très grand quota)
+    "gemini-3.1-flash-lite",  # 15 RPM / 500 RPD (Excellent secours)
+    "gemini-3.7-flash",       # 5 RPM / 20 RPD
+    "gemini-2.5-flash-lite"   # 10 RPM / 20 RPD
+]
+
+def call_gemini_with_fallback(prompt: str) -> str:
+    """Tente d'appeler l'API Gemini avec bascule automatique sur un autre modèle en cas de quota dépassé (429)."""
+    if not gemini_configured:
+        raise Exception("Gemini n'est pas configuré.")
+    
+    last_error = None
+    for model_name in MODELS_FALLBACK_LIST:
+        try:
+            m = genai.GenerativeModel(model_name)
+            response = m.generate_content(prompt)
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            error_str = str(e)
+            last_error = e
+            # Si quota dépassé (429) ou modèle saturé, on bascule vers le suivant
+            if "429" in error_str or "quota" in error_str.lower():
+                continue
+            else:
+                # Si c'est une autre erreur, on tente quand même le modèle suivant
+                continue
+                
+    raise Exception(f"Tous les modèles ont échoué. Dernière erreur : {last_error}")
+
+# ==========================================
+# GESTION DES PRÉRÉGLAGES VIA "FEUILLE 2"
+# ==========================================
+conn_gsheets = st.connection("gsheets", type=GSheetsConnection)
+
+def load_presets_from_sheet():
+    default_presets = {
         "Product Manager - Paris": {"job": "product manager", "loc": "Paris"},
         "Product Owner - Paris": {"job": "product owner", "loc": "Paris"}
     }
+    try:
+        df_p = conn_gsheets.read(worksheet="Feuille 2", dtype=str).fillna("")
+        if not df_p.empty and "Nom" in df_p.columns and "Poste" in df_p.columns and "Lieu" in df_p.columns:
+            presets = {}
+            for _, r in df_p.iterrows():
+                nom = str(r["Nom"]).strip()
+                if nom:
+                    presets[nom] = {
+                        "job": str(r["Poste"]).strip(),
+                        "loc": str(r["Lieu"]).strip()
+                    }
+            if presets:
+                return presets
+    except Exception:
+        pass
+    return default_presets
+
+def save_presets_to_sheet(presets_dict):
+    rows = []
+    for name, data in presets_dict.items():
+        rows.append({"Nom": name, "Poste": data.get("job", ""), "Lieu": data.get("loc", "")})
+    df_new = pd.DataFrame(rows)
+    conn_gsheets.update(worksheet="Feuille 2", data=df_new)
+    st.cache_data.clear()
+
+if "presets" not in st.session_state:
+    st.session_state.presets = load_presets_from_sheet()
 
 tab1, tab2 = st.tabs(["1. Recherche & Ajout", "2. Mes Offres & Analyses"])
 
@@ -41,7 +104,7 @@ with tab1:
             st.session_state.presets["Défaut"] = {"job": "product manager", "loc": "Paris"}
             preset_options = ["Défaut"]
         selected_preset = st.selectbox("Recherche sauvegardée :", preset_options)
-        current_data = st.session_state.presets[selected_preset]
+        current_data = st.session_state.presets.get(selected_preset, {"job": "product manager", "loc": "Paris"})
 
     col1, col2 = st.columns(2)
     with col1: job_title = st.text_input("Intitulé du poste", value=current_data["job"])
@@ -52,7 +115,8 @@ with tab1:
         if st.button("Sauvegarder", use_container_width=True):
             new_name = f"{job_title.title()} - {location.title()}"
             st.session_state.presets[new_name] = {"job": job_title, "loc": location}
-            st.success("OK !")
+            save_presets_to_sheet(st.session_state.presets)
+            st.success("Sauvegardé dans Feuille 2 !")
             time.sleep(1)
             st.rerun()
 
@@ -61,7 +125,8 @@ with tab1:
         if st.button("Supprimer", use_container_width=True):
             if len(st.session_state.presets) > 1:
                 del st.session_state.presets[selected_preset]
-                st.success("OK !")
+                save_presets_to_sheet(st.session_state.presets)
+                st.success("Supprimé !")
                 time.sleep(1)
                 st.rerun()
 
@@ -95,19 +160,18 @@ with tab1:
     
     if st.button("Ajouter au Tracker", type="primary", use_container_width=True):
         if offer_text.strip() and gemini_configured:
-            with st.spinner("Extraction..."):
+            with st.spinner("Extraction via IA..."):
                 prompt_json = f"""
                 Extrais les infos sous forme JSON valide avec EXACTEMENT ces clés : 
                 "Entreprise", "Poste", "Lieu", "Salaire". (Mets "Inconnu" si introuvable).
                 Offre : {offer_text}
                 """
                 try:
-                    response = model.generate_content(prompt_json)
-                    raw_json = response.text.replace('```json', '').replace('```', '').strip()
+                    response_text = call_gemini_with_fallback(prompt_json)
+                    raw_json = response_text.replace('```json', '').replace('```', '').strip()
                     extracted_data = json.loads(raw_json)
                     
-                    conn_add = st.connection("gsheets", type=GSheetsConnection)
-                    df_current = conn_add.read(dtype=str)
+                    df_current = conn_gsheets.read(dtype=str).fillna("")
                     
                     new_row = {
                         "Entreprise": extracted_data.get("Entreprise", "Inconnu"),
@@ -126,7 +190,7 @@ with tab1:
                     new_df = pd.DataFrame([new_row])
                     updated_df = pd.concat([df_current, new_df], ignore_index=True).fillna("")
                     
-                    conn_add.update(data=updated_df)
+                    conn_gsheets.update(data=updated_df)
                     st.cache_data.clear() 
                     st.success("Enregistrée !")
                     time.sleep(1)
@@ -142,9 +206,8 @@ with tab1:
 with tab2:
     st.markdown("<h2 style='text-align: center;'>Mes Offres Sauvegardées</h2>", unsafe_allow_html=True)
     
-    conn_tab2 = st.connection("gsheets", type=GSheetsConnection)
     try:
-        df_tracker = conn_tab2.read(dtype=str).fillna("")
+        df_tracker = conn_gsheets.read(dtype=str).fillna("")
         
         for col in ["Texte Offre", "Résumé IA", "Entretien IA", "Lettre de Motivation", "Entreprise", "Poste", "Statut"]:
             if col not in df_tracker.columns:
@@ -183,11 +246,11 @@ with tab2:
                 
                 if new_status != current_status:
                     df_tracker.at[selected_idx, 'Statut'] = new_status
-                    conn_tab2.update(data=df_tracker)
+                    conn_gsheets.update(data=df_tracker)
                     st.cache_data.clear()
                     st.rerun()
 
-            st.button("🗑️ Supprimer l'offre", use_container_width=True, on_click=lambda: (conn_tab2.update(data=df_tracker.drop(selected_idx)), st.cache_data.clear()))
+            st.button("🗑️ Supprimer l'offre", use_container_width=True, on_click=lambda: (conn_gsheets.update(data=df_tracker.drop(selected_idx)), st.cache_data.clear()))
 
             st.markdown("---")
             
@@ -202,12 +265,15 @@ with tab2:
                 else:
                     if st.button("✨ Générer", key="btn_res", use_container_width=True):
                         with st.spinner("Analyse..."):
-                            prompt = f"Agis comme un Product Manager Senior. Résume les missions de cette offre en exactement 3 points à puces clairs et concis.\nOffre : {row_data.get('Texte Offre')}"
-                            response = model.generate_content(prompt)
-                            df_tracker.at[selected_idx, 'Résumé IA'] = response.text
-                            conn_tab2.update(data=df_tracker)
-                            st.cache_data.clear()
-                            st.rerun()
+                            try:
+                                prompt = f"Agis comme un Product Manager Senior. Résume les missions de cette offre en exactement 3 points à puces clairs et concis.\nOffre : {row_data.get('Texte Offre')}"
+                                result = call_gemini_with_fallback(prompt)
+                                df_tracker.at[selected_idx, 'Résumé IA'] = result
+                                conn_gsheets.update(data=df_tracker)
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur Résumé : {e}")
 
             with col_ent:
                 st.markdown("<h4 style='text-align: center;'>Entretien</h4>", unsafe_allow_html=True)
@@ -218,21 +284,24 @@ with tab2:
                 else:
                     if st.button("🎯 Générer", key="btn_ent", use_container_width=True):
                         with st.spinner("Préparation..."):
-                            prompt = f"""
-                            Agis comme le Lead Product. Divise ta réponse en 2 :
-                            ### Fiche d'identité
-                            (Création, PDG, Siège, Employés, Concurrents, CA)
-                            ### Préparation (PM/PO)
-                            1. 3 valeurs clés.
-                            2. 3 questions techniques (Orientées Product).
-                            3. Mini-étude de cas.
-                            Offre : {row_data.get('Texte Offre')}
-                            """
-                            response = model.generate_content(prompt)
-                            df_tracker.at[selected_idx, 'Entretien IA'] = response.text
-                            conn_tab2.update(data=df_tracker)
-                            st.cache_data.clear()
-                            st.rerun()
+                            try:
+                                prompt = f"""
+                                Agis comme le Lead Product. Divise ta réponse en 2 :
+                                ### Fiche d'identité
+                                (Création, PDG, Siège, Employés, Concurrents, CA)
+                                ### Préparation (PM/PO)
+                                1. 3 valeurs clés.
+                                2. 3 questions techniques (Orientées Product).
+                                3. Mini-étude de cas.
+                                Offre : {row_data.get('Texte Offre')}
+                                """
+                                result = call_gemini_with_fallback(prompt)
+                                df_tracker.at[selected_idx, 'Entretien IA'] = result
+                                conn_gsheets.update(data=df_tracker)
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur Entretien : {e}")
                             
             with col_lm:
                 st.markdown("<h4 style='text-align: center;'>Lettre</h4>", unsafe_allow_html=True)
@@ -254,8 +323,8 @@ Return ONLY a valid JSON object with these two keys: "paragraphe_vous" and "phra
 Job description: {row_data.get('Texte Offre')}
 """
                             try:
-                                resp_lm = model.generate_content(prompt_lm)
-                                raw_json = resp_lm.text.replace('```json', '').replace('```', '').strip()
+                                resp_text = call_gemini_with_fallback(prompt_lm)
+                                raw_json = resp_text.replace('```json', '').replace('```', '').strip()
                                 dynamic_parts = json.loads(raw_json)
                                 
                                 lettre_finale = f"""**Subject:** Application for the {row_data.get('Poste')} Internship
@@ -283,7 +352,7 @@ Sincerely,
 **Pol CARTRON**
 """
                                 df_tracker.at[selected_idx, 'Lettre de Motivation'] = lettre_finale
-                                conn_tab2.update(data=df_tracker)
+                                conn_gsheets.update(data=df_tracker)
                                 st.cache_data.clear()
                                 st.rerun()
                             except Exception as e:
