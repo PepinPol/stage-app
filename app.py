@@ -243,33 +243,42 @@ with tab2:
                         st.markdown(current_lm)
                 else:
                     if st.button("📝 Générer", key="btn_lm", use_container_width=True):
-                        with st.spinner("Rédaction..."):
+                        with st.spinner("Writing cover letter..."):
                             prompt_lm = f"""
-                            Agis comme un expert en recrutement Produit. À partir de l'offre ci-dessous, rédige 2 éléments pour compléter la lettre de motivation d'un candidat en double diplôme Ingénierie/Management :
-                            1. "paragraphe_vous" : 2 à 3 phrases expliquant pourquoi la mission de l'entreprise, son produit ou ses défis tech l'attirent.
-                            2. "phrase_nous" : 1 phrase percutante reliant ses compétences (delivery, gestion de projet) et le besoin de l'offre.
-                            Renvoie UNIQUEMENT un JSON valide avec ces deux clés. Offre : {row_data.get('Texte Offre')}
-                            """
+Act as a Principal Product Manager and Hiring Director. Based on the job description below, generate 2 specific elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
+
+1. "paragraphe_vous": 2 to 3 sentences in English. Analyze the company's product challenges (e.g., scaling, user adoption, tech debt, automation, or feature delivery). Explain why their mission and product challenges directly resonate with an engineer-product manager. Avoid generic flatteries; be precise on features, users, or business challenges mentioned in the ad.
+2. "phrase_nous": 1 impactful closing sentence in English bridging the candidate's hands-on product building skills (discovery, writing specs, agile delivery, AI integration) with the role's primary need.
+
+Return ONLY a valid JSON object with these two keys: "paragraphe_vous" and "phrase_nous".
+Job description: {row_data.get('Texte Offre')}
+"""
                             try:
                                 resp_lm = model.generate_content(prompt_lm)
                                 raw_json = resp_lm.text.replace('```json', '').replace('```', '').strip()
                                 dynamic_parts = json.loads(raw_json)
                                 
-                                lettre_finale = f"""**Objet :** Candidature pour le stage de {row_data.get('Poste')}
+                                lettre_finale = f"""**Subject:** Application for the {row_data.get('Poste')} Internship
 
-Madame, Monsieur,
+Dear Hiring Team,
 
-Actuellement étudiant en double diplôme Ingénieur/Manager à l'INSA Rennes et Audencia, je suis à la recherche d'un stage de 6 mois à Paris pour janvier/février 2027. C'est avec un grand enthousiasme que je vous soumets ma candidature.
+Currently pursuing an Engineering and Management dual degree at INSA Rennes and Audencia Business School, I am seeking a 6-month Product Management internship in Paris starting in January/February 2027. It is with great enthusiasm that I submit my application.
 
 {dynamic_parts.get("paragraphe_vous", "")}
 
-Mon profil hybride me permet de faire naturellement le pont entre les enjeux business et les défis techniques. Ma formation en ingénierie à l'INSA Rennes m'a doté d'un fort esprit analytique, tandis que mon Master à Audencia m'a apporté une maîtrise solide de la stratégie produit, des méthodologies agiles (Scrum) et du Go-to-Market. Profondément "hands-on", je conçois et code mes propres produits technologiques. J'ai notamment géré le cycle de vie complet d'une application mobile développée avec Flutter, et j'ai architecturé une application web en Python intégrant l'API Google Gemini.
+My hybrid background bridges product strategy with hands-on technical execution. My engineering curriculum at INSA Rennes and R&D internship at Ingeliance trained me to deconstruct complex technical constraints and translate client requirements into viable solutions. Simultaneously, my Master of Science at Audencia equipped me with solid frameworks in product discovery, agile delivery (Scrum, Kanban), and go-to-market execution.
 
-Le métier exige un fort leadership pour aligner les parties prenantes. En tant que Président du bureau des étudiants, j'ai supervisé 1 300 membres et géré un budget d'un million d'euros, menant des projets d'envergure à leur terme. {dynamic_parts.get("phrase_nous", "")}
+Deeply hands-on, I don't just specify products—I build them:
+• Supermarket Assistant App: Led the end-to-end product lifecycle of a mobile application (Flutter, Firestore) built to optimize in-store grocery shopping, validating problem-solution fit and iterating on UX.
+• AI Internship Search Tracker: Engineered a full-stack web application (Python, Streamlit) integrating the Google Gemini API to automate job matching and analysis.
 
-Je serais ravi d'échanger avec vous sur la vision de votre produit et de démontrer comment mon profil technique et business pourrait contribuer à vos succès.
+Furthermore, product success relies heavily on stakeholder alignment and leadership without authority. As President of the INSA Rennes Student Union, I steered campus operations for 1,300 members and managed a €1M operating budget across 40 student initiatives. {dynamic_parts.get("phrase_nous", "")}
 
-Veuillez agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
+I would welcome the opportunity to discuss your product vision and demonstrate how my dual technical and business skillset can contribute to your success.
+
+Thank you for your time and consideration.
+
+Sincerely,
 
 **Pol CARTRON**
 """
