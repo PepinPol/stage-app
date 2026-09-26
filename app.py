@@ -18,13 +18,12 @@ try:
 except KeyError:
     st.error("La clé GEMINI_API_KEY n'est pas trouvée.")
 
-# Liste ordonnée de modèles avec bascule automatique (Fallback) en cas d'erreur 429
 MODELS_FALLBACK_LIST = [
-    "gemini-3.5-flash",       # Modèle par défaut
-    "gemini-3.5-flash-lite",  # 15 RPM / 500 RPD (Très grand quota)
-    "gemini-3.1-flash-lite",  # 15 RPM / 500 RPD (Excellent secours)
-    "gemini-3.7-flash",       # 5 RPM / 20 RPD
-    "gemini-2.5-flash-lite"   # 10 RPM / 20 RPD
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-2.5-flash-lite"
 ]
 
 def call_gemini_with_fallback(prompt: str) -> str:
@@ -42,11 +41,9 @@ def call_gemini_with_fallback(prompt: str) -> str:
         except Exception as e:
             error_str = str(e)
             last_error = e
-            # Si quota dépassé (429) ou modèle saturé, on bascule vers le suivant
             if "429" in error_str or "quota" in error_str.lower():
                 continue
             else:
-                # Si c'est une autre erreur, on tente quand même le modèle suivant
                 continue
                 
     raise Exception(f"Tous les modèles ont échoué. Dernière erreur : {last_error}")
@@ -88,6 +85,9 @@ def save_presets_to_sheet(presets_dict):
 
 if "presets" not in st.session_state:
     st.session_state.presets = load_presets_from_sheet()
+
+if "selected_offer_idx" not in st.session_state:
+    st.session_state.selected_offer_idx = None
 
 tab1, tab2 = st.tabs(["1. Recherche & Ajout", "2. Mes Offres & Analyses"])
 
@@ -204,29 +204,72 @@ with tab1:
 # ONGLET 2 : MES OFFRES & ANALYSES
 # ==========================================
 with tab2:
-    st.markdown("<h2 style='text-align: center;'>Mes Offres Sauvegardées</h2>", unsafe_allow_html=True)
-    
     try:
         df_tracker = conn_gsheets.read(dtype=str).fillna("")
         
-        for col in ["Texte Offre", "Résumé IA", "Entretien IA", "Lettre de Motivation", "Entreprise", "Poste", "Statut"]:
+        for col in ["Texte Offre", "Résumé IA", "Entretien IA", "Lettre de Motivation", "Entreprise", "Poste", "Statut", "Lieu", "Salaire", "Lien"]:
             if col not in df_tracker.columns:
                 df_tracker[col] = ""
 
         valid_indices = df_tracker[df_tracker['Entreprise'].str.strip() != ""].index
-        
-        if valid_indices.empty:
-            st.info("Aucune offre sauvegardée pour le moment.")
+
+        # Si l'index sélectionné n'existe plus dans le dataframe, on le réinitialise
+        if st.session_state.selected_offer_idx not in valid_indices:
+            st.session_state.selected_offer_idx = None
+
+        # --- VUE 1 : VUE GLOBALE / LISTE DES OFFRES ---
+        if st.session_state.selected_offer_idx is None:
+            st.markdown("<h2 style='text-align: center;'>Mes Offres Sauvegardées</h2>", unsafe_allow_html=True)
+            
+            if valid_indices.empty:
+                st.info("Aucune offre sauvegardée pour le moment.")
+            else:
+                st.caption(f"{len(valid_indices)} offre(s) enregistrée(s)")
+                
+                status_colors = {
+                    "À postuler": "#3b82f6",
+                    "Envoyée": "#eab308",
+                    "Entretien": "#8b5cf6",
+                    "Offre": "#22c55e",
+                    "Refus": "#ef4444"
+                }
+
+                for idx in valid_indices:
+                    row = df_tracker.loc[idx]
+                    status = row.get("Statut", "À postuler")
+                    badge_color = status_colors.get(status, "#64748b")
+                    
+                    with st.container(border=True):
+                        col_card_txt, col_card_btn = st.columns([3, 1], vertical_alignment="center")
+                        with col_card_txt:
+                            st.markdown(f"**🏢 {row.get('Entreprise')}** — {row.get('Poste')}")
+                            details = []
+                            if row.get("Lieu"): details.append(f"📍 {row.get('Lieu')}")
+                            if row.get("Salaire"): details.append(f"💰 {row.get('Salaire')}")
+                            meta_str = " | ".join(details)
+                            
+                            badge_html = f"<span style='background-color:{badge_color}; color:white; padding:2px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>{status}</span>"
+                            if meta_str:
+                                st.markdown(f"<small style='color: gray;'>{meta_str}</small> &nbsp; {badge_html}", unsafe_allow_html=True)
+                            else:
+                                st.markdown(badge_html, unsafe_allow_html=True)
+                                
+                        with col_card_btn:
+                            if st.button("🔍 Analyser", key=f"btn_open_{idx}", use_container_width=True):
+                                st.session_state.selected_offer_idx = idx
+                                st.rerun()
+
+        # --- VUE 2 : DÉTAIL ET ANALYSE D'UNE OFFRE ---
         else:
-            selected_idx = st.selectbox(
-                "Sélectionne une offre :", 
-                options=valid_indices,
-                format_func=lambda x: f"{df_tracker.loc[x, 'Entreprise']} - {df_tracker.loc[x, 'Poste']}"
-            )
-            
+            selected_idx = st.session_state.selected_offer_idx
             row_data = df_tracker.loc[selected_idx]
-            
-            # Titre centré de l'offre
+
+            col_back, _ = st.columns([1.5, 3])
+            with col_back:
+                if st.button("⬅️ Retour aux offres", use_container_width=True):
+                    st.session_state.selected_offer_idx = None
+                    st.rerun()
+
             st.markdown(f"<h3 style='text-align: center;'>🏢 {row_data.get('Entreprise')} - {row_data.get('Poste')}</h3>", unsafe_allow_html=True)
             
             col_info, col_status = st.columns([2, 1])
@@ -236,7 +279,6 @@ with tab2:
                     st.markdown(f"[🔗 Voir l'annonce]({row_data.get('Lien')})")
             
             with col_status:
-                # GESTION DU STATUT
                 status_options = ["À postuler", "Envoyée", "Entretien", "Offre", "Refus"]
                 current_status = row_data.get('Statut', 'À postuler')
                 if current_status not in status_options and current_status.strip() != "":
@@ -250,7 +292,11 @@ with tab2:
                     st.cache_data.clear()
                     st.rerun()
 
-            st.button("🗑️ Supprimer l'offre", use_container_width=True, on_click=lambda: (conn_gsheets.update(data=df_tracker.drop(selected_idx)), st.cache_data.clear()))
+            if st.button("🗑️ Supprimer l'offre", use_container_width=True):
+                conn_gsheets.update(data=df_tracker.drop(selected_idx))
+                st.cache_data.clear()
+                st.session_state.selected_offer_idx = None
+                st.rerun()
 
             st.markdown("---")
             
@@ -314,7 +360,7 @@ with tab2:
                     if st.button("📝 Générer", key="btn_lm", use_container_width=True):
                         with st.spinner("Writing cover letter..."):
                             prompt_lm = f"""
-Act as a Principal Product Manager and Hiring Director. Based on the job description below, generate 2 specific elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
+Act pas à pas en tant que Hiring Director PM. Based on the job description below, generate 2 specific elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
 
 1. "paragraphe_vous": 2 to 3 sentences in English. Analyze the company's product challenges (e.g., scaling, user adoption, tech debt, automation, or feature delivery). Explain why their mission and product challenges directly resonate with an engineer-product manager. Avoid generic flatteries; be precise on features, users, or business challenges mentioned in the ad.
 2. "phrase_nous": 1 impactful closing sentence in English bridging the candidate's hands-on product building skills (discovery, writing specs, agile delivery, AI integration) with the role's primary need.
