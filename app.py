@@ -358,57 +358,70 @@ with tab2:
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erreur Entretien : {e}")
-                            
+            
             with col_lm:
-                st.markdown("<h4 style='text-align: center;'>Lettre</h4>", unsafe_allow_html=True)
-                current_lm = row_data.get('Lettre de Motivation', '').strip()
-                
-                if current_lm:
-                    with st.expander("Voir la lettre"):
-                        st.markdown(current_lm)
-                else:
-                    if st.button("📝 Générer", key="btn_lm", use_container_width=True):
-                        with st.spinner("Rédaction de la lettre en cours..."):
-                            prompt_lm = f"""
-                            Agis comme un expert en recrutement Produit. À partir de la description d'offre de stage ci-dessous, rédige les deux éléments sur-mesure pour compléter la lettre de motivation d'un candidat étudiant en double diplôme Ingénierie/Management :
+                # Fonction réutilisable pour générer ou regénérer la lettre
+                def generer_lettre():
+                    with st.spinner("Writing cover letter..."):
+                        prompt_lm = f"""
+                        Act as a Product Hiring Expert. Based on the job description below, write two tailored elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
+                        
+                        1. "paragraphe_vous": 2 to 3 sentences maximum in English explaining why the company's mission, product, or technological challenges are particularly appealing. Be specific and include keywords from the job description.
+                        2. "phrase_nous": 1 impactful sentence in English bridging the candidate's cross-functional project management and delivery skills with the primary need described in the role.
+                        
+                        Return the result ONLY as a valid JSON object with exactly these two keys ("paragraphe_vous" and "phrase_nous"). Do not include any extra text before or after.
+                        
+                        Job description: {row_data.get('Texte Offre')}
+                        """
+                        try:
+                            resp_text = call_gemini_with_fallback(prompt_lm)
+                            raw_json = resp_text.replace('```json', '').replace('```', '').strip()
+                            dynamic_parts = json.loads(raw_json)
                             
-                            1. "paragraphe_vous" : 2 à 3 phrases maximum expliquant pourquoi la mission de l'entreprise, son produit ou ses défis technologiques sont particulièrement attractifs. Sois précis et utilise les mots-clés de l'offre.
-                            2. "phrase_nous" : 1 seule phrase percutante qui fait le lien direct entre les compétences du candidat en gestion de projet (delivery, coordination d'équipes) et le besoin principal décrit dans l'offre.
-                            
-                            Renvoie le résultat UNIQUEMENT sous forme de code JSON valide avec exactement ces deux clés ("paragraphe_vous" et "phrase_nous"). Ne mets aucun texte avant ou après.
-                            
-                            Offre : {row_data.get('Texte Offre')}
-                            """
-                            try:
-                                resp_text = call_gemini_with_fallback(prompt_lm)
-                                raw_json = resp_text.replace('```json', '').replace('```', '').strip()
-                                dynamic_parts = json.loads(raw_json)
-                                
-                                lettre_finale = f"""**Objet :** Candidature pour le stage de {row_data.get('Poste')}
+                            lettre_finale = f"""**Subject:** Application for the {row_data.get('Poste')} Internship
 
-Madame, Monsieur,
+Dear Hiring Team,
 
-Actuellement étudiant en double diplôme Ingénierie et Management à l'INSA Rennes et Audencia Business School, je suis à la recherche d'un stage de 6 mois à Paris pour janvier/février 2027. C'est avec un grand enthousiasme que je vous soumets ma candidature.
+Currently pursuing an Engineering and Management dual degree at INSA Rennes and Audencia Business School, I am seeking a 6-month internship in Paris starting in January/February 2027. It is with great enthusiasm that I submit my application.
 
 {dynamic_parts.get("paragraphe_vous", "")}
 
-Mon profil hybride me permet de faire naturellement le pont entre les enjeux business et les défis techniques. Ma formation en ingénierie à l'INSA Rennes m'a doté d'un fort esprit analytique, tandis que mon Master à Audencia m'a apporté une maîtrise solide de la stratégie produit, des méthodologies agiles (Scrum) et du Go-to-Market. Profondément "hands-on", je conçois et code mes propres produits technologiques. J'ai notamment géré le cycle de vie complet d'une application mobile développée avec Flutter, et j'ai architecturé une application web en Python intégrant l'API Google Gemini.
+My hybrid background allows me to naturally bridge the gap between business strategy and technical execution. My engineering curriculum at INSA Rennes provided me with strong analytical rigor, while my Master's program at Audencia honed my skills in product strategy, agile methodologies (Scrum, Kanban), and Go-to-Market execution. Deeply hands-on, I actively design and build my own technical products. Specifically, I led the end-to-end product lifecycle of a mobile application built with Flutter, and engineered a web application in Python integrating the Google Gemini API.
 
-Le métier exige un fort leadership pour aligner les parties prenantes. En tant que Président du bureau des étudiants, j'ai supervisé 1 300 membres et géré un budget d'un million d'euros, menant des projets d'envergure à leur terme. {dynamic_parts.get("phrase_nous", "")}
+Product leadership requires strong interpersonal influence to align stakeholders. As President of the Student Union, I oversaw 1,300 members and managed a €1M budget, successfully steering large-scale initiatives from concept to execution. {dynamic_parts.get("phrase_nous", "")}
 
-Je serais ravi d'échanger avec vous sur la vision de votre produit et de démontrer comment mon profil technique et business pourrait contribuer à vos succès.
+I would welcome the opportunity to discuss your product vision and demonstrate how my dual technical and business skillset can contribute to your success.
 
-Veuillez agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
+Thank you for your time and consideration.
+
+Sincerely,
 
 **Pol CARTRON**
 """
-                                df_tracker.at[selected_idx, 'Lettre de Motivation'] = lettre_finale
-                                conn_gsheets.update(data=df_tracker)
-                                st.cache_data.clear()
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erreur LM : {e}")
+                            df_tracker.at[selected_idx, 'Lettre de Motivation'] = lettre_finale
+                            conn_gsheets.update(data=df_tracker)
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erreur LM : {e}")
+
+                current_lm = row_data.get('Lettre de Motivation', '').strip()
+                
+                if current_lm:
+                    col_lm_title, col_lm_regen = st.columns([3, 1], vertical_alignment="center")
+                    with col_lm_title:
+                        st.markdown("<h4 style='text-align: center; margin: 0;'>Lettre</h4>", unsafe_allow_html=True)
+                    with col_lm_regen:
+                        if st.button("🔄", key="btn_regen_lm", help="Regénérer la lettre"):
+                            generer_lettre()
                             
+                    with st.expander("Voir la lettre"):
+                        st.markdown(current_lm)
+                else:
+                    st.markdown("<h4 style='text-align: center;'>Lettre</h4>", unsafe_allow_html=True)
+                    if st.button("📝 Générer", key="btn_lm", use_container_width=True):
+                        generer_lettre()
+            
             with st.expander("Texte original"):
                 st.write(row_data.get('Texte Offre', 'Aucun texte.'))
 
