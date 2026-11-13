@@ -79,7 +79,7 @@ def infer_main_status(history_list: list, current_status: str) -> str:
 
 # --- GÉNÉRATEUR PDF LETTRE DE MOTIVATION (ATS-FRIENDLY) ---
 def sanitize_pdf_text(text: str) -> str:
-    """Remplace les caractères Unicode spéciaux pour compatibilité Helvetica standard (Latin-1/Windows-1252)."""
+    """Remplace les caractères Unicode spéciaux pour compatibilité Helvetica standard."""
     replacements = {
         "€": "EUR ",
         "’": "'",
@@ -96,13 +96,13 @@ def sanitize_pdf_text(text: str) -> str:
     return text.encode("latin-1", "replace").decode("latin-1")
 
 def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes:
-    """Génère un PDF A4 propre (1 page) façon Google Docs avec lien LinkedIn cliquable."""
+    """Génère un PDF A4 propre (1 page) façon Google Docs avec bloc destinataire aligné à droite."""
     pdf = FPDF(format="A4", unit="mm")
     pdf.set_margins(left=20, top=16, right=20)
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    # 1. En-tête Candidat
+    # 1. En-tête Candidat (aligné à gauche)
     pdf.set_font("Helvetica", "B", 14)
     pdf.set_text_color(20, 20, 20)
     pdf.cell(0, 6.5, sanitize_pdf_text("Pol CARTRON"), new_x="LMARGIN", new_y="NEXT")
@@ -111,37 +111,27 @@ def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes
     pdf.set_text_color(60, 60, 60)
     pdf.cell(0, 5, sanitize_pdf_text("Dual degree Engineering/Management student"), new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 5, sanitize_pdf_text("INSA Rennes / Audencia"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, sanitize_pdf_text("pol.cartron@gmail.com | (+33) 7 83 86 71 64"), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
 
-    # Coordonnées + lien LinkedIn cliquable
-    pdf.set_font("Helvetica", "", 9.5)
-    pdf.set_text_color(60, 60, 60)
-    contact_prefix = sanitize_pdf_text("pol.cartron@gmail.com | (+33) 7 83 86 71 64 | ")
-    pdf.write(5, contact_prefix)
-    
-    pdf.set_text_color(26, 86, 219)
-    pdf.set_font("Helvetica", "U", 9.5)
-    pdf.write(5, "linkedin.com/in/pol-cartron", "https://www.linkedin.com/in/pol-cartron-419964239/")
-    pdf.ln(9)
-
-    # 2. Bloc Destinataire & Date
+    # 2. Bloc Destinataire & Date (aligné tout à droite)
     pdf.set_text_color(20, 20, 20)
     pdf.set_font("Helvetica", "B", 10.5)
     clean_company = sanitize_pdf_text(company.strip() if company and company.strip().lower() != "inconnu" else "")
     if clean_company:
-        pdf.cell(0, 5.2, clean_company, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 5.2, clean_company, align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 10)
     clean_loc = sanitize_pdf_text(location.strip() if location and location.strip().lower() != "inconnu" else "Paris, France")
     if "france" not in clean_loc.lower() and "paris" in clean_loc.lower():
         clean_loc = f"{clean_loc}, France"
-    pdf.cell(0, 5.2, clean_loc, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5.2, clean_loc, align="R", new_x="LMARGIN", new_y="NEXT")
 
     today_str = datetime.now().strftime("%d/%m/%Y")
-    pdf.cell(0, 5.2, today_str, new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(5)
+    pdf.cell(0, 5.2, today_str, align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(6)
 
     # 3. Corps de la lettre
-    # Nettoyage des éventuels marqueurs Markdown ** pour un rendu propre
     clean_body = body_text.replace("**", "").strip()
     paragraphs = clean_body.split("\n\n")
 
@@ -500,60 +490,10 @@ with tab2:
                 st.rerun()
 
             st.markdown("---")
-            
-            # --- ANALYSES IA : RÉSUMÉ & ENTRETIEN ---
-            col_res, col_ent = st.columns(2)
-            
-            with col_res:
-                st.markdown("<h4 style='text-align: center;'>Résumé</h4>", unsafe_allow_html=True)
-                current_resume = row_data.get('Résumé IA', '').strip()
-                
-                if current_resume:
-                    st.info(current_resume)
-                else:
-                    if st.button("✨ Générer", key="btn_res", use_container_width=True):
-                        with st.spinner("Analyse..."):
-                            try:
-                                prompt = f"Agis comme un Product Manager Senior. Résume les missions de cette offre en exactement 3 points à puces clairs et concis.\nOffre : {row_data.get('Texte Offre')}"
-                                result = call_gemini_with_fallback(prompt)
-                                df_tracker.at[selected_idx, 'Résumé IA'] = result
-                                conn_gsheets.update(data=df_tracker)
-                                st.cache_data.clear()
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erreur Résumé : {e}")
 
-            with col_ent:
-                st.markdown("<h4 style='text-align: center;'>Entretien</h4>", unsafe_allow_html=True)
-                current_entretien = row_data.get('Entretien IA', '').strip()
-                
-                if current_entretien:
-                    st.success(current_entretien)
-                else:
-                    if st.button("🎯 Générer", key="btn_ent", use_container_width=True):
-                        with st.spinner("Préparation..."):
-                            try:
-                                prompt = f"""
-                                Agis comme le Lead Product. Divise ta réponse en 2 :
-                                ### Fiche d'identité
-                                (Création, PDG, Siège, Employés, Concurrents, CA)
-                                ### Préparation (PM/PO)
-                                1. 3 valeurs clés.
-                                2. 3 questions techniques (Orientées Product).
-                                3. Mini-étude de cas.
-                                Offre : {row_data.get('Texte Offre')}
-                                """
-                                result = call_gemini_with_fallback(prompt)
-                                df_tracker.at[selected_idx, 'Entretien IA'] = result
-                                conn_gsheets.update(data=df_tracker)
-                                st.cache_data.clear()
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erreur Entretien : {e}")
-
-            st.markdown("---")
-
-            # --- LETTRE DE MOTIVATION (ÉDITION + EXPORT PDF DIRECT) ---
+            # ========================================================
+            # 1. LETTRE DE MOTIVATION & EXPORT PDF (PLEINE LARGEUR)
+            # ========================================================
             def generer_lettre():
                 with st.spinner("Writing cover letter..."):
                     prompt_lm = f"""
@@ -597,26 +537,24 @@ Pol CARTRON"""
                     except Exception as e:
                         st.error(f"Erreur LM : {e}")
 
-            with st.container(border=True):
-                current_lm = row_data.get('Lettre de Motivation', '').strip()
-                
+            current_lm = row_data.get('Lettre de Motivation', '').strip()
+            with st.expander("📝 Lettre de Motivation & Export PDF", expanded=bool(current_lm)):
                 if current_lm:
-                    col_lm_title, col_lm_regen = st.columns([4, 1], vertical_alignment="center")
-                    with col_lm_title:
-                        st.markdown("#### 📝 Lettre de Motivation & Export PDF")
+                    col_lm_info, col_lm_regen = st.columns([4, 1], vertical_alignment="center")
+                    with col_lm_info:
+                        st.caption("Modifie le texte ci-dessous si besoin puis télécharge directement ton PDF A4.")
                     with col_lm_regen:
                         if st.button("🔄 Regénérer", key="btn_regen_lm", use_container_width=True, help="Générer une nouvelle version via IA"):
                             generer_lettre()
 
-                    # Zone d'édition manuelle
                     edited_lm = st.text_area(
-                        "Modifier le texte avant export PDF :",
+                        "Contenu de la lettre :",
                         value=current_lm,
                         height=300,
-                        key=f"lm_editor_{selected_idx}"
+                        key=f"lm_editor_{selected_idx}",
+                        label_visibility="collapsed"
                     )
 
-                    # Génération du PDF à la volée à partir du texte affiché/édité
                     pdf_bytes = build_cover_letter_pdf(
                         company=row_data.get("Entreprise", ""),
                         location=row_data.get("Lieu", "Paris, France"),
@@ -644,11 +582,62 @@ Pol CARTRON"""
                             use_container_width=True
                         )
                 else:
-                    st.markdown("<h4 style='text-align: center;'>Lettre de Motivation</h4>", unsafe_allow_html=True)
                     if st.button("📝 Générer la lettre & le PDF", key="btn_lm", use_container_width=True):
                         generer_lettre()
-            
-            with st.expander("Texte original"):
+
+            # ========================================================
+            # 2. RÉSUMÉ DE L'OFFRE (PLEINE LARGEUR, REPLIABLE)
+            # ========================================================
+            current_resume = row_data.get('Résumé IA', '').strip()
+            with st.expander("✨ Résumé de l'offre", expanded=False):
+                if current_resume:
+                    st.info(current_resume)
+                else:
+                    if st.button("✨ Générer le résumé", key="btn_res", use_container_width=True):
+                        with st.spinner("Analyse..."):
+                            try:
+                                prompt = f"Agis comme un Product Manager Senior. Résume les missions de cette offre en exactement 3 points à puces clairs et concis.\nOffre : {row_data.get('Texte Offre')}"
+                                result = call_gemini_with_fallback(prompt)
+                                df_tracker.at[selected_idx, 'Résumé IA'] = result
+                                conn_gsheets.update(data=df_tracker)
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur Résumé : {e}")
+
+            # ========================================================
+            # 3. PRÉPARATION ENTRETIEN (PLEINE LARGEUR, REPLIABLE)
+            # ========================================================
+            current_entretien = row_data.get('Entretien IA', '').strip()
+            with st.expander("🎯 Préparation Entretien", expanded=False):
+                if current_entretien:
+                    st.success(current_entretien)
+                else:
+                    if st.button("🎯 Générer la préparation", key="btn_ent", use_container_width=True):
+                        with st.spinner("Préparation..."):
+                            try:
+                                prompt = f"""
+                                Agis comme le Lead Product. Divise ta réponse en 2 :
+                                ### Fiche d'identité
+                                (Création, PDG, Siège, Employés, Concurrents, CA)
+                                ### Préparation (PM/PO)
+                                1. 3 valeurs clés.
+                                2. 3 questions techniques (Orientées Product).
+                                3. Mini-étude de cas.
+                                Offre : {row_data.get('Texte Offre')}
+                                """
+                                result = call_gemini_with_fallback(prompt)
+                                df_tracker.at[selected_idx, 'Entretien IA'] = result
+                                conn_gsheets.update(data=df_tracker)
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur Entretien : {e}")
+
+            # ========================================================
+            # 4. TEXTE ORIGINAL DE L'OFFRE
+            # ========================================================
+            with st.expander("📄 Texte original de l'offre", expanded=False):
                 st.write(row_data.get('Texte Offre', 'Aucun texte.'))
 
     except Exception as e:
