@@ -2,9 +2,8 @@ name: Agent de Veille Stage PM/PO
 
 on:
   schedule:
-    # S'exécute tous les jours à 07h00 UTC (08h00 heure de Paris en hiver)
-    - cron: '0 7 * * *'
-  # Permet aussi de lancer l'agent manuellement d'un clic depuis GitHub pour tester !
+    # S'exécute uniquement du lundi au vendredi (1-5) à 07h00 UTC (08h00 Paris)
+    - cron: '0 7 * * 1-5'
   workflow_dispatch:
 
 jobs:
