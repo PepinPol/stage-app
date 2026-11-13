@@ -560,8 +560,8 @@ Pol CARTRON"""
                         location=row_data.get("Lieu", "Paris, France"),
                         body_text=edited_lm
                     )
-                    safe_company = re.sub(r'[^a-zA-Z0-9_-]', '_', row_data.get('Entreprise', 'Company').strip())
-                    pdf_filename = f"Cover_Letter_Pol_Cartron_{safe_company}.pdf"
+                    safe_company = re.sub(r'[^a-zA-Z0-9_-]', '_', row_data.get('Entreprise', 'Entreprise').strip()).strip('_')
+                    pdf_filename = f"LM_Pol_Cartron_{safe_company}.pdf"
 
                     btn_save_lm, btn_dl_pdf = st.columns(2)
                     with btn_save_lm:
@@ -606,12 +606,21 @@ Pol CARTRON"""
                                 st.error(f"Erreur Résumé : {e}")
 
             # ========================================================
-            # 3. PRÉPARATION ENTRETIEN (PLEINE LARGEUR, REPLIABLE)
+            # 3. PRÉPARATION ENTRETIEN (PLEINE LARGEUR + BOUTON REFERMER)
             # ========================================================
             current_entretien = row_data.get('Entretien IA', '').strip()
-            with st.expander("🎯 Préparation Entretien", expanded=False):
+            ent_exp_key = f"ent_expanded_{selected_idx}"
+            if ent_exp_key not in st.session_state:
+                st.session_state[ent_exp_key] = False
+
+            with st.expander("🎯 Préparation Entretien", expanded=st.session_state[ent_exp_key]):
                 if current_entretien:
                     st.success(current_entretien)
+                    _, col_close_ent = st.columns([4, 1])
+                    with col_close_ent:
+                        if st.button("⬆️ Refermer", key=f"close_ent_{selected_idx}", use_container_width=True):
+                            st.session_state[ent_exp_key] = False
+                            st.rerun()
                 else:
                     if st.button("🎯 Générer la préparation", key="btn_ent", use_container_width=True):
                         with st.spinner("Préparation..."):
@@ -630,6 +639,7 @@ Pol CARTRON"""
                                 df_tracker.at[selected_idx, 'Entretien IA'] = result
                                 conn_gsheets.update(data=df_tracker)
                                 st.cache_data.clear()
+                                st.session_state[ent_exp_key] = True
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erreur Entretien : {e}")
