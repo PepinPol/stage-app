@@ -42,11 +42,27 @@ PRESET_STEPS = [
     "Autre (personnalisé)"
 ]
 
-REQUIRED_COLUMNS = [
+REQUIRED_COLUMNS_F1 = [
     "Entreprise", "Poste", "Lien", "Lieu", "Salaire", "Date",
     "Statut", "Historique", "Texte Offre", "Résumé IA",
     "Entretien IA", "Lettre de Motivation"
 ]
+
+REQUIRED_COLUMNS_F3 = [
+    "Date_Ajout", "Entreprise", "Poste", "Lieu", "Salaire",
+    "Lien", "Score", "Texte_Complet", "Statut_File"
+]
+
+DEFAULT_AGENT_CONFIG = {
+    "jobs": ["product manager", "product owner", "chef de projet digital", "product analyst"],
+    "loc": "Paris",
+    "days": 4,
+    "weekdays": ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"],
+    "sites": ["LinkedIn", "Welcome to the Jungle", "HelloWork"]
+}
+
+ALL_WEEKDAYS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+ALL_SITES = ["LinkedIn", "Welcome to the Jungle", "HelloWork", "Web global"]
 
 # ==========================================
 # INITIALISATION IA & CONNEXION SHEETS
@@ -62,7 +78,6 @@ conn_gsheets = st.connection("gsheets", type=GSheetsConnection)
 
 
 def call_gemini_with_fallback(prompt: str) -> str:
-    """Appelle l'API Gemini avec bascule automatique sur les modèles de secours."""
     if not gemini_configured:
         raise RuntimeError("Gemini n'est pas configuré.")
     last_error = None
@@ -77,7 +92,6 @@ def call_gemini_with_fallback(prompt: str) -> str:
 
 
 def parse_llm_json(raw_text: str) -> dict:
-    """Nettoie les balises Markdown éventuelles et parse le JSON retourné par le LLM."""
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text.strip())
     return json.loads(cleaned)
 
@@ -87,14 +101,12 @@ def parse_llm_json(raw_text: str) -> dict:
 # ==========================================
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_sheet_df(worksheet: str | None = None) -> pd.DataFrame:
-    """Lit une feuille Google Sheets avec mise en cache courte (2 min) pour accélérer la navigation."""
     if worksheet:
         return conn_gsheets.read(worksheet=worksheet, dtype=str).fillna("")
     return conn_gsheets.read(dtype=str).fillna("")
 
 
 def update_sheet_df(df: pd.DataFrame, worksheet: str | None = None) -> None:
-    """Met à jour Google Sheets et invalide immédiatement le cache local."""
     if worksheet:
         conn_gsheets.update(worksheet=worksheet, data=df)
     else:
@@ -102,32 +114,47 @@ def update_sheet_df(df: pd.DataFrame, worksheet: str | None = None) -> None:
     st.cache_data.clear()
 
 
-def load_presets_from_sheet() -> dict:
+def load_feuille2_data() -> tuple[dict, dict]:
+    """Charge à la fois les recherches sauvegardées (Onglet 1) et la config de l'agent (Onglet 3) depuis Feuille 2."""
     default_presets = {
         "Product Manager - Paris": {"job": "product manager", "loc": "Paris"},
         "Product Owner - Paris": {"job": "product owner", "loc": "Paris"}
     }
+    agent_cfg = dict(DEFAULT_AGENT_CONFIG)
+    presets = {}
+
     try:
         df_p = fetch_sheet_df(worksheet="Feuille 2")
-        if not df_p.empty and {"Nom", "Poste", "Lieu"}.issubset(df_p.columns):
-            presets = {
-                str(r["Nom"]).strip(): {"job": str(r["Poste"]).strip(), "loc": str(r["Lieu"]).strip()}
-                for _, r in df_p.iterrows()
-                if str(r["Nom"]).strip()
-            }
-            if presets:
-                return presets
+        if not df_p.empty:
+            for _, r in df_p.iterrows():
+                nom = str(r.get("Nom", "")).strip()
+                poste = str(r.get("Poste", "")).strip()
+                lieu = str(r.get("Lieu", "")).strip()
+                if nom == "__AGENT_CONFIG__" and poste:
+                    try:
+                        loaded_cfg = json.loads(poste)
+                        agent_cfg.update(loaded_cfg)
+                    except Exception:
+                        pass
+                elif nom and nom != "__AGENT_CONFIG__":
+                    presets[nom] = {"job": poste, "loc": lieu}
     except Exception:
         pass
-    return default_presets
+
+    return (presets if presets else default_presets), agent_cfg
 
 
-def save_presets_to_sheet(presets_dict: dict) -> None:
-    df_new = pd.DataFrame([
+def save_feuille2_data(presets_dict: dict, agent_cfg: dict) -> None:
+    rows = [
         {"Nom": name, "Poste": data.get("job", ""), "Lieu": data.get("loc", "")}
         for name, data in presets_dict.items()
-    ])
-    update_sheet_df(df_new, worksheet="Feuille 2")
+    ]
+    rows.append({
+        "Nom": "__AGENT_CONFIG__",
+        "Poste": json.dumps(agent_cfg, ensure_ascii=False),
+        "Lieu": ""
+    })
+    update_sheet_df(pd.DataFrame(rows), worksheet="Feuille 2")
 
 
 # ==========================================
@@ -172,7 +199,6 @@ def sanitize_pdf_text(text: str) -> str:
 
 
 def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes:
-    """Génère un PDF A4 standard (210x297 mm) avec marges Google Docs (25 mm)."""
     pdf = FPDF(orientation="P", format="A4", unit="mm")
     pdf.set_margins(left=25, top=22, right=25)
     pdf.set_auto_page_break(auto=True, margin=20)
@@ -231,7 +257,6 @@ def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes
 
 
 def build_job_search_urls(job_title: str, location: str) -> tuple[str, str, str]:
-    """Construit les URLs filtrées pour LinkedIn, HelloWork et JobTeaser."""
     job_enc = urllib.parse.quote(job_title)
     loc_enc = urllib.parse.quote(location)
     is_paris = location.strip().lower() == "paris"
@@ -266,14 +291,27 @@ def build_job_search_urls(job_title: str, location: str) -> tuple[str, str, str]
 # ==========================================
 # INTERFACE UTILISATEUR
 # ==========================================
-st.markdown("<h1 style='text-align: center;'>Espace de Recherche PM/PO</h1>", unsafe_allow_html=True)
+col_title, col_refresh = st.columns([5, 1], vertical_alignment="center")
+with col_title:
+    st.markdown("<h1 style='text-align: center;'>Espace de Recherche PM/PO</h1>", unsafe_allow_html=True)
+with col_refresh:
+    if st.button("🔄", help="Actualiser les données depuis Google Sheets", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-if "presets" not in st.session_state:
-    st.session_state.presets = load_presets_from_sheet()
+if "presets" not in st.session_state or "agent_cfg" not in st.session_state:
+    p_loaded, cfg_loaded = load_feuille2_data()
+    st.session_state.presets = p_loaded
+    st.session_state.agent_cfg = cfg_loaded
+
 if "selected_offer_idx" not in st.session_state:
     st.session_state.selected_offer_idx = None
 
-tab1, tab2 = st.tabs(["1. Recherche & Ajout", "2. Mes Offres & Analyses"])
+tab1, tab2, tab3 = st.tabs([
+    "1. Recherche & Ajout",
+    "2. Mes Offres & Analyses",
+    "3. 🤖 Agent & File d'attente"
+])
 
 # ==========================================
 # ONGLET 1 : HUB DE RECHERCHE & AJOUT
@@ -300,7 +338,7 @@ with tab1:
         if st.button("Sauvegarder", use_container_width=True):
             new_name = f"{job_title.title()} - {location.title()}"
             st.session_state.presets[new_name] = {"job": job_title, "loc": location}
-            save_presets_to_sheet(st.session_state.presets)
+            save_feuille2_data(st.session_state.presets, st.session_state.agent_cfg)
             st.success("Sauvegardé dans Feuille 2 !")
             time.sleep(0.8)
             st.rerun()
@@ -309,7 +347,7 @@ with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Supprimer", use_container_width=True) and len(st.session_state.presets) > 1:
             del st.session_state.presets[selected_preset]
-            save_presets_to_sheet(st.session_state.presets)
+            save_feuille2_data(st.session_state.presets, st.session_state.agent_cfg)
             st.success("Supprimé !")
             time.sleep(0.8)
             st.rerun()
@@ -375,7 +413,7 @@ with tab1:
 with tab2:
     try:
         df_tracker = fetch_sheet_df()
-        for col in REQUIRED_COLUMNS:
+        for col in REQUIRED_COLUMNS_F1:
             if col not in df_tracker.columns:
                 df_tracker[col] = ""
 
@@ -683,3 +721,168 @@ Pol CARTRON"""
 
     except Exception as e:
         st.error(f"Erreur base de données : {e}")
+
+# ==========================================
+# ONGLET 3 : AGENT IA & FILE D'ATTENTE
+# ==========================================
+with tab3:
+    st.markdown("<h2 style='text-align: center;'>Agent de Veille Automatique</h2>", unsafe_allow_html=True)
+
+    # --- 1. PARAMÈTRES MODULABLES DE L'AGENT ---
+    with st.expander("⚙️ Paramètres de recherche de l'Agent", expanded=False):
+        cfg = st.session_state.agent_cfg
+
+        st.markdown("**1. Intitulés de postes recherchés**")
+        base_jobs = ["product manager", "product owner", "chef de projet digital", "product analyst", "business analyst", "data analyst"]
+        all_known_jobs = list(dict.fromkeys(base_jobs + cfg.get("jobs", [])))
+        selected_jobs = st.multiselect(
+            "Postes actifs :",
+            options=all_known_jobs,
+            default=[j for j in cfg.get("jobs", []) if j in all_known_jobs]
+        )
+        new_custom_job = st.text_input("Ajouter un intitulé personnalisé (optionnel) :", placeholder="ex: associate product manager")
+
+        col_cfg1, col_cfg2 = st.columns(2)
+        with col_cfg1:
+            cfg_loc = st.text_input("Ville cible :", value=cfg.get("loc", "Paris"))
+        with col_cfg2:
+            cfg_days = st.slider("Ancienneté max des offres (jours) :", min_value=1, max_value=14, value=int(cfg.get("days", 4)))
+
+        st.markdown("**2. Jours actifs de la semaine**")
+        selected_weekdays = st.multiselect(
+            "L'agent tourne uniquement ces jours-là :",
+            options=ALL_WEEKDAYS,
+            default=cfg.get("weekdays", ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"])
+        )
+
+        st.markdown("**3. Sites explorés par l'agent**")
+        selected_sites = st.multiselect(
+            "Sources web actives :",
+            options=ALL_SITES,
+            default=cfg.get("sites", ["LinkedIn", "Welcome to the Jungle", "HelloWork"])
+        )
+
+        nb_credits_est = len(selected_jobs) * len(selected_sites)
+        st.caption(f"⚡ Coût estimé par exécution : **{nb_credits_est} crédits Tavily** (Limite conseillée : ≤ 32/jour)")
+
+        if st.button("💾 Enregistrer la configuration de l'Agent", type="primary", use_container_width=True):
+            final_jobs = list(selected_jobs)
+            if new_custom_job.strip() and new_custom_job.strip().lower() not in [j.lower() for j in final_jobs]:
+                final_jobs.append(new_custom_job.strip().lower())
+
+            updated_cfg = {
+                "jobs": final_jobs or ["product manager", "product owner"],
+                "loc": cfg_loc.strip() or "Paris",
+                "days": cfg_days,
+                "weekdays": selected_weekdays or ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"],
+                "sites": selected_sites or ["LinkedIn", "Welcome to the Jungle", "HelloWork"]
+            }
+            st.session_state.agent_cfg = updated_cfg
+            save_feuille2_data(st.session_state.presets, updated_cfg)
+            st.success("Configuration enregistrée ! L'agent l'appliquera dès son prochain passage.")
+            time.sleep(0.8)
+            st.rerun()
+
+    st.markdown("---")
+
+    # --- 2. FILE D'ATTENTE & HISTORIQUE DES REFUS (FEUILLE 3) ---
+    try:
+        df_queue = fetch_sheet_df(worksheet="Feuille 3")
+        for col in REQUIRED_COLUMNS_F3:
+            if col not in df_queue.columns:
+                df_queue[col] = ""
+
+        # Nettoyage des lignes vides
+        valid_q = df_queue[df_queue["Entreprise"].str.strip() != ""]
+        pending_df = valid_q[valid_q["Statut_File"].str.strip().isin(["", "En attente"])]
+        rejected_df = valid_q[valid_q["Statut_File"].str.strip() == "Refusée"]
+
+        st.markdown(f"### 📥 File d'attente ({len(pending_df)} offre(s) à trier)")
+
+        if pending_df.empty:
+            st.info("Aucune nouvelle offre en attente pour le moment. Reviens après le prochain passage de l'agent !")
+        else:
+            for q_idx, q_row in pending_df.iterrows():
+                score_txt = q_row.get("Score", "").strip()
+                score_badge = f" | ⭐ **{score_txt}/10**" if score_txt else ""
+                date_ajout = q_row.get("Date_Ajout", "")
+                lien_offre = q_row.get("Lien", "").strip()
+
+                with st.container(border=True):
+                    top_c1, top_c2 = st.columns([4, 1], vertical_alignment="center")
+                    with top_c1:
+                        st.markdown(f"**🏢 {q_row.get('Entreprise')}** — {q_row.get('Poste')}")
+                        st.caption(f"📅 Trouvée le {date_ajout} • 📍 {q_row.get('Lieu', 'Paris')} • 💰 {q_row.get('Salaire', 'Inconnu')}{score_badge}")
+                    with top_c2:
+                        if lien_offre:
+                            st.link_button("🔗 Voir", lien_offre, use_container_width=True)
+
+                    with st.expander("📄 Voir / Modifier le texte de l'offre avant ajout", expanded=False):
+                        edited_q_text = st.text_area(
+                            "Texte qui sera enregistré dans le tracker :",
+                            value=q_row.get("Texte_Complet", ""),
+                            height=180,
+                            key=f"q_text_{q_idx}",
+                            label_visibility="collapsed"
+                        )
+
+                    btn_accept, btn_reject = st.columns(2)
+                    with btn_accept:
+                        if st.button("✅ Ajouter au Tracker", key=f"acc_q_{q_idx}", type="primary", use_container_width=True):
+                            df_f1 = fetch_sheet_df()
+                            today_str = datetime.now().strftime("%d/%m/%Y")
+                            final_text = st.session_state.get(f"q_text_{q_idx}", q_row.get("Texte_Complet", ""))
+
+                            new_f1_row = {
+                                "Entreprise": q_row.get("Entreprise", "Inconnu"),
+                                "Poste": q_row.get("Poste", "Inconnu"),
+                                "Lien": lien_offre,
+                                "Lieu": q_row.get("Lieu", "Paris"),
+                                "Salaire": q_row.get("Salaire", "Inconnu"),
+                                "Date": today_str,
+                                "Statut": "À postuler",
+                                "Historique": json.dumps([{"date": today_str, "etape": "Validée depuis la file Agent"}], ensure_ascii=False),
+                                "Texte Offre": final_text,
+                                "Résumé IA": "",
+                                "Entretien IA": "",
+                                "Lettre de Motivation": ""
+                            }
+                            updated_f1 = pd.concat([df_f1, pd.DataFrame([new_f1_row])], ignore_index=True).fillna("")
+                            update_sheet_df(updated_f1)
+
+                            # Retire de la file d'attente (déjà présente dans Feuille 1 donc pas de doublon futur)
+                            updated_f3 = df_queue.drop(q_idx)
+                            update_sheet_df(updated_f3, worksheet="Feuille 3")
+                            st.success(f"{q_row.get('Entreprise')} ajoutée au tracker !")
+                            time.sleep(0.6)
+                            st.rerun()
+
+                    with btn_reject:
+                        if st.button("❌ Refuser", key=f"rej_q_{q_idx}", use_container_width=True):
+                            df_queue.at[q_idx, "Statut_File"] = "Refusée"
+                            update_sheet_df(df_queue, worksheet="Feuille 3")
+                            st.rerun()
+
+        st.markdown("---")
+
+        # --- 3. HISTORIQUE DES OFFRES REFUSÉES ---
+        with st.expander(f"🗄️ Historique des offres refusées ({len(rejected_df)})", expanded=False):
+            if rejected_df.empty:
+                st.caption("Aucune offre refusée pour le moment.")
+            else:
+                for r_idx, r_row in rejected_df.iterrows():
+                    rc1, rc2, rc3 = st.columns([3, 1, 1.3], vertical_alignment="center")
+                    with rc1:
+                        st.markdown(f"**{r_row.get('Entreprise')}** — {r_row.get('Poste')}")
+                        st.caption(f"Refusée (trouvée le {r_row.get('Date_Ajout', '')})")
+                    with rc2:
+                        if r_row.get("Lien", "").strip():
+                            st.link_button("🔗", r_row.get("Lien", "").strip(), use_container_width=True)
+                    with rc3:
+                        if st.button("↩️ Repêcher", key=f"restore_q_{r_idx}", use_container_width=True):
+                            df_queue.at[r_idx, "Statut_File"] = "En attente"
+                            update_sheet_df(df_queue, worksheet="Feuille 3")
+                            st.rerun()
+
+    except Exception as e:
+        st.error(f"Erreur lecture Feuille 3 (vérifie que l'onglet 'Feuille 3' existe bien) : {e}")
