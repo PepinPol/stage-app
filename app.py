@@ -134,8 +134,11 @@ with tab1:
     loc_encoded = urllib.parse.quote(location)
     is_paris = location.strip().lower() == "paris"
     
-    url_linkedin = f"https://www.linkedin.com/jobs/search/?keywords={job_encoded}&location={loc_encoded}&f_JT=I&sortBy=DD"
-    if is_paris: url_linkedin += "&distance=10"
+    # --- CORRECTION LIEN LINKEDIN ---
+    if is_paris:
+        url_linkedin = f"https://www.linkedin.com/jobs/search/?keywords={job_encoded}&location=Paris%2C%20%C3%8Ele-de-France%2C%20France&geoId=105015875&distance=15&f_JT=I&sortBy=DD&refresh=true"
+    else:
+        url_linkedin = f"https://www.linkedin.com/jobs/search/?keywords={job_encoded}&location={loc_encoded}&f_JT=I&sortBy=DD&refresh=true"
     
     url_hellowork = f"https://www.hellowork.com/fr-fr/emploi/recherche.html?k={job_encoded}&l={loc_encoded}&c=Stage&st=date"
     if is_paris: url_hellowork += "&ray=20"
@@ -213,7 +216,6 @@ with tab2:
 
         valid_indices = df_tracker[df_tracker['Entreprise'].str.strip() != ""].index
 
-        # Si l'index sélectionné n'existe plus dans le dataframe, on le réinitialise
         if st.session_state.selected_offer_idx not in valid_indices:
             st.session_state.selected_offer_idx = None
 
@@ -360,7 +362,6 @@ with tab2:
                                 st.error(f"Erreur Entretien : {e}")
             
             with col_lm:
-                # Fonction réutilisable pour générer ou regénérer la lettre
                 def generer_lettre():
                     with st.spinner("Writing cover letter..."):
                         prompt_lm = f"""
