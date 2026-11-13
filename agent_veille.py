@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import unicodedata
 from datetime import datetime
 import requests
 import gspread
@@ -46,6 +47,24 @@ SITE_QUERY_TEMPLATES = {
     "Indeed": 'site:fr.indeed.com/viewjob "stage" "{job}" "{loc}"',
     "Web global": '"offre de stage" "{job}" "{loc}" 2027'
 }
+
+
+def normalize_col_name(name: str) -> str:
+    """Normalise un nom de colonne (minuscules, sans accents, sans espaces/apostrophes/underscores)."""
+    no_accents = "".join(
+        c for c in unicodedata.normalize("NFD", str(name))
+        if unicodedata.category(c) != "Mn"
+    )
+    return re.sub(r"[^a-z0-9]", "", no_accents.lower())
+
+
+def col_index_to_letter(n: int) -> str:
+    """Convertit un index de colonne 1-based (1 -> A, 26 -> Z, 27 -> AA) en lettre Excel/Sheets."""
+    result = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        result = chr(65 + rem) + result
+    return result
 
 
 def ask_gemini_fast(prompt: str) -> str:
@@ -107,10 +126,10 @@ def get_all_known_offers_and_next_queue_row() -> tuple[set, set, int]:
         vals = ws.get_all_values()
         if not vals:
             continue
-        headers = vals[0]
-        idx_ent = headers.index("Entreprise") if "Entreprise" in headers else 0
-        idx_poste = headers.index("Poste") if "Poste" in headers else 1
-        idx_lien = headers.index("Lien") if "Lien" in headers else 2
+        headers_norm = [normalize_col_name(h) for h in vals[0]]
+        idx_ent = headers_norm.index("entreprise") if "entreprise" in headers_norm else 1
+        idx_poste = headers_norm.index("poste") if "poste" in headers_norm else 2
+        idx_lien = headers_norm.index("lien") if "lien" in headers_norm else 5
 
         for row in vals[1:]:
             ent = row[idx_ent].strip().lower() if len(row) > idx_ent else ""
@@ -121,7 +140,6 @@ def get_all_known_offers_and_next_queue_row() -> tuple[set, set, int]:
             if ent and poste:
                 existing_pairs.add((ent, poste))
 
-    # Calcul de la prochaine ligne vide exacte dans Feuille 3
     q_vals = sheet_queue.get_all_values()
     last_non_empty = 1
     for idx, row in enumerate(q_vals[1:], start=2):
@@ -178,7 +196,7 @@ def filter_batch_with_gemini(offers: list[dict], loc: str) -> list[dict]:
         return []
 
     all_selected = []
-    batch_size = 15  # Découpe par paquets de 15 pour éviter tout timeout
+    batch_size = 15
 
     for i in range(0, len(offers), batch_size):
         chunk = offers[i:i + batch_size]
@@ -218,6 +236,36 @@ def filter_batch_with_gemini(offers: list[dict], loc: str) -> list[dict]:
     return all_selected
 
 
+def build_ordered_row_for_f3(headers: list[str], data_map: dict[str, str]) -> list[str]:
+    """Aligne les données avec les colonnes réelles de Feuille 3 quelle que soit la casse/apostrophe."""
+    row = []
+    for col in headers:
+        norm = normalize_col_name(col)
+        if not norm:
+            row.append("")
+        elif "date" in norm:
+            row.append(data_map["date"])
+        elif "entreprise" in norm:
+            row.append(data_map["entreprise"])
+        elif "poste" in norm:
+            row.append(data_map["poste"])
+        elif "lieu" in norm:
+            row.append(data_map["lieu"])
+        elif "salaire" in norm:
+            row.append(data_map["salaire"])
+        elif "lien" in norm:
+            row.append(data_map["lien"])
+        elif "score" in norm:
+            row.append(data_map["score"])
+        elif "texte" in norm:
+            row.append(data_map["texte"])
+        elif "statut" in norm:
+            row.append(data_map["statut"])
+        else:
+            row.append("")
+    return row
+
+
 # ==========================================
 # 5. EXÉCUTION PRINCIPALE
 # ==========================================
@@ -233,6 +281,7 @@ def run_agent():
     existing_links, existing_pairs, next_row = get_all_known_offers_and_next_queue_row()
     today_str = datetime.now().strftime("%d/%m/%Y")
     headers_f3 = sheet_queue.row_values(1)
+    print(f"🧾 Colonnes Feuille 3 : {headers_f3}")
 
     all_candidates = []
     seen_batch_urls = set()
@@ -263,28 +312,29 @@ def run_agent():
         raw_full = raw_text_by_url.get(url.lower(), "")
         best_text = raw_full if len(raw_full) > 250 else offer.get("Resume_Propre", "")
 
-        row_dict = {
-            "Date_Ajout": today_str,
-            "Entreprise": ent,
-            "Poste": poste,
-            "Lieu": offer.get("Lieu", cfg["loc"]),
-            "Salaire": offer.get("Salaire", "Inconnu"),
-            "Lien": url,
-            "Score": str(offer.get("Score", "8")),
-            "Texte_Complet": best_text,
-            "Statut_File": "En attente"
+        data_map = {
+            "date": today_str,
+            "entreprise": ent,
+            "poste": poste,
+            "lieu": offer.get("Lieu", cfg["loc"]),
+            "salaire": offer.get("Salaire", "Inconnu"),
+            "lien": url,
+            "score": str(offer.get("Score", "8")),
+            "texte": best_text,
+            "statut": "En attente"
         }
 
-        ordered_row = [row_dict.get(col, "") for col in headers_f3]
+        ordered_row = build_ordered_row_for_f3(headers_f3, data_map)
         rows_to_insert.append(ordered_row)
 
         existing_links.add(url.lower())
         existing_pairs.add((ent.lower(), poste.lower()))
-        print(f"✅ Mise en file d'attente : {ent} - {poste} ({row_dict['Score']}/10)")
+        print(f"✅ Mise en file d'attente : {ent} - {poste} ({data_map['score']}/10)")
 
     if rows_to_insert:
         end_row = next_row + len(rows_to_insert) - 1
-        range_label = f"A{next_row}:I{end_row}"
+        last_col_letter = col_index_to_letter(len(headers_f3))
+        range_label = f"A{next_row}:{last_col_letter}{end_row}"
         sheet_queue.update(values=rows_to_insert, range_name=range_label, value_input_option="USER_ENTERED")
         print(f"🏁 Terminé ! {len(rows_to_insert)} offre(s) ajoutée(s) dans 'Feuille 3' ({range_label}).")
     else:
