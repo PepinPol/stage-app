@@ -12,7 +12,7 @@ import google.generativeai as genai
 # ==========================================
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
-SPREADSHEET_URL = os.environ["SPREADSHEET_URL"]
+SPREADSHEET_URL = os.environ["SPREADSHEET_URL"].strip()
 GSHEETS_CREDS = json.loads(os.environ["GSHEETS_CREDENTIALS_JSON"])
 
 genai.configure(api_key=GEMINI_API_KEY)
@@ -25,8 +25,14 @@ creds = Credentials.from_service_account_info(GSHEETS_CREDS, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sh = gc.open_by_url(SPREADSHEET_URL)
 
-# Premier onglet tout à gauche (lu par défaut par Streamlit)
-sheet_offres = sh.get_worksheet(0)
+# --- LOGS DE DIAGNOSTIC GOOGLE SHEETS ---
+all_sheets = [ws.title for ws in sh.worksheets()]
+print(f"📂 Classeur connecté : '{sh.title}' (ID: {sh.id})")
+print(f"📑 Onglets disponibles : {all_sheets}")
+
+# Ciblage explicite par nom ("Feuille 1") au lieu de l'index 0
+sheet_offres = sh.worksheet("Feuille 1")
+print(f"🎯 Onglet cible sélectionné : '{sheet_offres.title}' (Lignes actuelles : {sheet_offres.row_count})")
 
 MODELS_FALLBACK = [
     "gemini-3.5-flash-lite",
@@ -34,7 +40,6 @@ MODELS_FALLBACK = [
     "gemini-3.5-flash"
 ]
 
-# Les 4 critères conservés (4 postes x 3 sites = 12 crédits Tavily max par jour)
 TARGET_CRITERIA = [
     {"job": "product manager", "loc": "Paris"},
     {"job": "product owner", "loc": "Paris"},
@@ -68,6 +73,7 @@ def parse_json_response(raw_text: str):
 
 def get_existing_offers() -> tuple[set, set]:
     records = sheet_offres.get_all_records()
+    print(f"📊 {len(records)} offre(s) existante(s) lue(s) dans '{sheet_offres.title}'.")
     existing_links = set()
     existing_pairs = set()
     for r in records:
@@ -151,10 +157,10 @@ def filter_batch_with_gemini(offers: list[dict]) -> list[dict]:
 
 
 def run_agent():
-    print(f"🚀 Démarrage de l'agent sur la feuille : '{sheet_offres.title}'...")
     existing_links, existing_pairs = get_existing_offers()
     today_str = datetime.now().strftime("%d/%m/%Y")
     headers = sheet_offres.row_values(1)
+    print(f"🧾 Colonnes détectées en ligne 1 : {headers}")
 
     all_candidates = []
     seen_batch_urls = set()
@@ -196,12 +202,13 @@ def run_agent():
         }
 
         ordered_row = [row_dict.get(col, "") for col in headers]
-        sheet_offres.append_row(ordered_row, value_input_option="USER_ENTERED")
+        res_append = sheet_offres.append_row(ordered_row, value_input_option="USER_ENTERED")
+        updated_range = res_append.get("updates", {}).get("updatedRange", "inconnu")
 
         existing_links.add(url.lower())
         existing_pairs.add((ent.lower(), poste.lower()))
         added_count += 1
-        print(f"✅ Ajoutée : {ent} - {poste}")
+        print(f"✅ Ajoutée à la plage [{updated_range}] : {ent} - {poste}")
 
     print(f"🏁 Terminé ! {added_count} nouvelle(s) offre(s) ajoutée(s) dans '{sheet_offres.title}'.")
 
