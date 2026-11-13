@@ -130,19 +130,22 @@ with tab1:
                 time.sleep(1)
                 st.rerun()
 
+    # --- ENCODAGE & GÉNÉRATION DE LIENS ---
     job_encoded = urllib.parse.quote(job_title)
     loc_encoded = urllib.parse.quote(location)
     is_paris = location.strip().lower() == "paris"
     
-    # --- CORRECTION LIEN LINKEDIN ---
+    # 1. LinkedIn (Nouvelle structure search-results + Stage + Tri plus récent)
     if is_paris:
-        url_linkedin = f"https://www.linkedin.com/jobs/search/?keywords={job_encoded}&location=Paris%2C%20%C3%8Ele-de-France%2C%20France&geoId=105015875&distance=15&f_JT=I&sortBy=DD&refresh=true"
+        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&geoId=106383538&distance=15&f_JT=I&sortBy=DD&origin=JOB_SEARCH_PAGE_JOB_FILTER"
     else:
-        url_linkedin = f"https://www.linkedin.com/jobs/search/?keywords={job_encoded}&location={loc_encoded}&f_JT=I&sortBy=DD&refresh=true"
+        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&location={loc_encoded}&f_JT=I&sortBy=DD&origin=JOB_SEARCH_PAGE_JOB_FILTER"
     
+    # 2. HelloWork
     url_hellowork = f"https://www.hellowork.com/fr-fr/emploi/recherche.html?k={job_encoded}&l={loc_encoded}&c=Stage&st=date"
     if is_paris: url_hellowork += "&ray=20"
 
+    # 3. JobTeaser
     url_jobteaser = f"https://audencia.jobteaser.com/fr/job-offers?contract=internship&q={job_encoded}&contract_duration=6&start_date=2027_01&start_date=2027_02&study_levels=4&work_experience_code=young_graduate&sort=recency"
     if is_paris:
         url_jobteaser += "&radius=20&lat=48.853495&lng=2.348391&location=France%3A%3A%C3%8Ele-de-France%3A%3AParis%3A%3AParis%3A%3AbG9jYWxpdHk6ZnI6Y2l0eTpmemVIZnJnZDJQekhETTNCZXE0NlUyL3pFMG89"
