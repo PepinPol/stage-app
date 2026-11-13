@@ -32,7 +32,9 @@ sheet_queue = sh.worksheet("Feuille 3")
 MODELS_FALLBACK = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-3.5-flash"
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+    "gemini-2.5-flash"
 ]
 
 FRENCH_DAYS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
@@ -41,7 +43,7 @@ SITE_QUERY_TEMPLATES = {
     "LinkedIn": 'site:linkedin.com/jobs/view "stage" "{job}" "{loc}"',
     "Welcome to the Jungle": 'site:welcometothejungle.com/fr/companies "stage" "{job}" "{loc}"',
     "HelloWork": 'site:hellowork.com/fr-fr/emplois "stage" "{job}" "{loc}"',
-"Indeed": 'site:fr.indeed.com/viewjob "stage" "{job}" "{loc}"',
+    "Indeed": 'site:fr.indeed.com/viewjob "stage" "{job}" "{loc}"',
     "Web global": '"offre de stage" "{job}" "{loc}" 2027'
 }
 
@@ -53,7 +55,7 @@ def ask_gemini_fast(prompt: str) -> str:
             model = genai.GenerativeModel(model_name)
             resp = model.generate_content(
                 prompt,
-                request_options={"retry": None, "timeout": 40}
+                request_options={"retry": None, "timeout": 120}
             )
             if resp and resp.text:
                 print(f"🤖 Réponse obtenue via {model_name}")
@@ -78,7 +80,7 @@ def load_agent_config() -> dict:
         "loc": "Paris",
         "days": 4,
         "weekdays": ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"],
-        "sites": ["LinkedIn", "Welcome to the Jungle", "HelloWork"]
+        "sites": ["LinkedIn", "Welcome to the Jungle", "HelloWork", "Indeed"]
     }
     try:
         records = sheet_config.get_all_records()
@@ -101,7 +103,6 @@ def get_all_known_offers_and_next_queue_row() -> tuple[set, set, int]:
     existing_links = set()
     existing_pairs = set()
 
-    # 1. Lecture Feuille 1
     for ws in (sheet_offres, sheet_queue):
         vals = ws.get_all_values()
         if not vals:
@@ -160,7 +161,6 @@ def search_jobs_tavily(job: str, loc: str, days: int, active_sites: list[str]) -
                 url = item.get("url", "").strip()
                 if url and url not in seen_urls:
                     seen_urls.add(url)
-                    # Privilégie le contenu brut complet s'il est disponible
                     full_txt = (item.get("raw_content") or item.get("content") or "").strip()
                     results.append({
                         "title": item.get("title", ""),
@@ -177,39 +177,45 @@ def filter_batch_with_gemini(offers: list[dict], loc: str) -> list[dict]:
     if not offers:
         return []
 
-    # On envoie uniquement titre + url + snippet à Gemini pour économiser les tokens
-    light_offers = [
-        {"title": o["title"], "url": o["url"], "snippet": o["snippet"]}
-        for o in offers
-    ]
+    all_selected = []
+    batch_size = 15  # Découpe par paquets de 15 pour éviter tout timeout
 
-    prompt = f"""
-    Tu es un assistant de recrutement pour Pol Cartron (étudiant double diplôme Ingénieur INSA Rennes / Management Audencia).
-    Il cherche un STAGE de fin d'études de 6 mois en Product Management (PM), Product Ownership (PO), Gestion de Projet Digital ou Product Analysis, autour de {loc}, pour janvier/février 2027.
+    for i in range(0, len(offers), batch_size):
+        chunk = offers[i:i + batch_size]
+        light_offers = [
+            {"title": o["title"], "url": o["url"], "snippet": o["snippet"][:350]}
+            for o in chunk
+        ]
 
-    Analyse ces résultats et ne garde QUE les vraies offres de stage individuelles pertinentes :
-    - Exclure les pages de listes/annuaires, les CDI, les alternances, et les postes senior sans mention de stage.
-    - Une seule offre par entreprise si doublon.
+        prompt = f"""
+        Tu es un assistant de recrutement pour Pol Cartron (étudiant double diplôme Ingénieur INSA Rennes / Management Audencia).
+        Il cherche un STAGE de fin d'études de 6 mois en Product Management (PM), Product Ownership (PO), Gestion de Projet Digital ou Product Analysis, autour de {loc}, pour janvier/février 2027.
 
-    Résultats :
-    {json.dumps(light_offers, ensure_ascii=False)}
+        Analyse ces résultats et ne garde QUE les vraies offres de stage individuelles pertinentes :
+        - Exclure les pages de listes/annuaires, les CDI, les alternances, et les postes senior sans mention de stage.
+        - Une seule offre par entreprise si doublon.
 
-    Retourne UNIQUEMENT un tableau JSON valide contenant les offres retenues (score >= 7/10) avec exactement ces clés :
-    - "url": l'URL exacte
-    - "Entreprise": nom de l'entreprise
-    - "Poste": intitulé exact du poste
-    - "Lieu": ville
-    - "Salaire": gratification si mentionnée (sinon "Inconnu")
-    - "Score": note entière sur 10
-    - "Resume_Propre": résumé structuré de l'offre en 4-5 lignes
-    Si aucune offre n'est pertinente, retourne [].
-    """
-    try:
-        res = parse_json_response(ask_gemini_fast(prompt))
-        return res if isinstance(res, list) else []
-    except Exception as e:
-        print(f"Erreur batch Gemini : {e}")
-        return []
+        Résultats :
+        {json.dumps(light_offers, ensure_ascii=False)}
+
+        Retourne UNIQUEMENT un tableau JSON valide contenant les offres retenues (score >= 7/10) avec exactement ces clés :
+        - "url": l'URL exacte
+        - "Entreprise": nom de l'entreprise
+        - "Poste": intitulé exact du poste
+        - "Lieu": ville
+        - "Salaire": gratification si mentionnée (sinon "Inconnu")
+        - "Score": note entière sur 10
+        - "Resume_Propre": résumé structuré de l'offre en 4-5 lignes
+        Si aucune offre n'est pertinente, retourne [].
+        """
+        try:
+            res = parse_json_response(ask_gemini_fast(prompt))
+            if isinstance(res, list):
+                all_selected.extend(res)
+        except Exception as e:
+            print(f"Erreur sur le lot {i // batch_size + 1} : {e}")
+
+    return all_selected
 
 
 # ==========================================
@@ -243,7 +249,6 @@ def run_agent():
     selected_offers = filter_batch_with_gemini(all_candidates, cfg["loc"])
     print(f"🎯 {len(selected_offers)} offre(s) retenue(s) pour la file d'attente.")
 
-    # Indexation des textes bruts complets par URL
     raw_text_by_url = {c["url"].lower(): c["full_text"] for c in all_candidates}
 
     rows_to_insert = []
@@ -255,7 +260,6 @@ def run_agent():
         if not ent or ent.lower() == "inconnu" or (ent.lower(), poste.lower()) in existing_pairs:
             continue
 
-        # Utilise le texte complet extrait s'il est riche, sinon le résumé propre
         raw_full = raw_text_by_url.get(url.lower(), "")
         best_text = raw_full if len(raw_full) > 250 else offer.get("Resume_Propre", "")
 
@@ -281,7 +285,7 @@ def run_agent():
     if rows_to_insert:
         end_row = next_row + len(rows_to_insert) - 1
         range_label = f"A{next_row}:I{end_row}"
-        sheet_queue.update(range_name=range_label, values=rows_to_insert, value_input_option="USER_ENTERED")
+        sheet_queue.update(values=rows_to_insert, range_name=range_label, value_input_option="USER_ENTERED")
         print(f"🏁 Terminé ! {len(rows_to_insert)} offre(s) ajoutée(s) dans 'Feuille 3' ({range_label}).")
     else:
         print("🏁 Terminé ! Aucune nouvelle offre à mettre en file d'attente.")
