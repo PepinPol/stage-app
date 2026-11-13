@@ -135,11 +135,11 @@ with tab1:
     loc_encoded = urllib.parse.quote(location)
     is_paris = location.strip().lower() == "paris"
     
-    # 1. LinkedIn (Nouvelle structure search-results + Stage + Tri plus récent)
+    # 1. LinkedIn (Nouvelle structure search-results + paramètre Stage f_SAL)
     if is_paris:
-        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&geoId=106383538&distance=15&f_JT=I&sortBy=DD&origin=JOB_SEARCH_PAGE_JOB_FILTER"
+        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&origin=JOB_SEARCH_PAGE_JOB_FILTER&geoId=106383538&distance=15&f_SAL=f_SA_id_226001%3A275001"
     else:
-        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&location={loc_encoded}&f_JT=I&sortBy=DD&origin=JOB_SEARCH_PAGE_JOB_FILTER"
+        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&location={loc_encoded}&origin=JOB_SEARCH_PAGE_JOB_FILTER&f_SAL=f_SA_id_226001%3A275001"
     
     # 2. HelloWork
     url_hellowork = f"https://www.hellowork.com/fr-fr/emploi/recherche.html?k={job_encoded}&l={loc_encoded}&c=Stage&st=date"
