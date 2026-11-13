@@ -5,6 +5,7 @@ import urllib.parse
 import google.generativeai as genai
 import json
 import time
+from datetime import datetime
 
 st.set_page_config(page_title="Tracker de Stage PM", layout="centered")
 
@@ -47,6 +48,32 @@ def call_gemini_with_fallback(prompt: str) -> str:
                 continue
                 
     raise Exception(f"Tous les modèles ont échoué. Dernière erreur : {last_error}")
+
+# --- UTILITAIRES HISTORIQUE ---
+def parse_history(raw_val: str) -> list:
+    if not raw_val or not str(raw_val).strip():
+        return []
+    try:
+        data = json.loads(str(raw_val))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def infer_main_status(history_list: list, current_status: str) -> str:
+    if not history_list:
+        return current_status if current_status else "À postuler"
+    last_step = history_list[-1].get("etape", "").lower()
+    if "refus" in last_step:
+        return "Refus"
+    elif "offre" in last_step:
+        return "Offre"
+    elif "entretien" in last_step or "étude de cas" in last_step or "case" in last_step:
+        return "Entretien"
+    elif "envoy" in last_step or "postul" in last_step:
+        return "Envoyée"
+    elif "ajout" in last_step:
+        return "À postuler"
+    return current_status
 
 # ==========================================
 # GESTION DES PRÉRÉGLAGES VIA "FEUILLE 2"
@@ -135,11 +162,11 @@ with tab1:
     loc_encoded = urllib.parse.quote(location)
     is_paris = location.strip().lower() == "paris"
     
-    # 1. LinkedIn (Nouvelle structure search-results + paramètre Stage f_SAL)
+    # 1. LinkedIn (Stage + Dernier mois f_TPR=r2592000)
     if is_paris:
-        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&origin=JOB_SEARCH_PAGE_JOB_FILTER&geoId=106383538&distance=15&f_SAL=f_SA_id_226001%3A275001"
+        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&origin=JOB_SEARCH_PAGE_JOB_FILTER&geoId=106383538&distance=15&f_TPR=r2592000&f_SAL=f_SA_id_226001%3A275001"
     else:
-        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&location={loc_encoded}&origin=JOB_SEARCH_PAGE_JOB_FILTER&f_SAL=f_SA_id_226001%3A275001"
+        url_linkedin = f"https://www.linkedin.com/jobs/search-results/?keywords={job_encoded}&location={loc_encoded}&origin=JOB_SEARCH_PAGE_JOB_FILTER&f_TPR=r2592000&f_SAL=f_SA_id_226001%3A275001"
     
     # 2. HelloWork
     url_hellowork = f"https://www.hellowork.com/fr-fr/emploi/recherche.html?k={job_encoded}&l={loc_encoded}&c=Stage&st=date"
@@ -178,6 +205,12 @@ with tab1:
                     extracted_data = json.loads(raw_json)
                     
                     df_current = conn_gsheets.read(dtype=str).fillna("")
+                    today_str = pd.Timestamp.now().strftime("%d/%m/%Y")
+                    
+                    initial_history = json.dumps(
+                        [{"date": today_str, "etape": "Ajoutée au tracker"}],
+                        ensure_ascii=False
+                    )
                     
                     new_row = {
                         "Entreprise": extracted_data.get("Entreprise", "Inconnu"),
@@ -185,8 +218,9 @@ with tab1:
                         "Lien": offer_link if offer_link else "",
                         "Lieu": extracted_data.get("Lieu", ""),
                         "Salaire": extracted_data.get("Salaire", ""),
-                        "Date": pd.Timestamp.now().strftime("%d/%m/%Y"),
+                        "Date": today_str,
                         "Statut": "À postuler",
+                        "Historique": initial_history,
                         "Texte Offre": offer_text,
                         "Résumé IA": "",
                         "Entretien IA": "",
@@ -198,7 +232,7 @@ with tab1:
                     
                     conn_gsheets.update(data=updated_df)
                     st.cache_data.clear() 
-                    st.success("Enregistrée !")
+                    st.success("Enregistrée avec date du jour !")
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
@@ -213,7 +247,7 @@ with tab2:
     try:
         df_tracker = conn_gsheets.read(dtype=str).fillna("")
         
-        for col in ["Texte Offre", "Résumé IA", "Entretien IA", "Lettre de Motivation", "Entreprise", "Poste", "Statut", "Lieu", "Salaire", "Lien"]:
+        for col in ["Texte Offre", "Résumé IA", "Entretien IA", "Lettre de Motivation", "Entreprise", "Poste", "Statut", "Lieu", "Salaire", "Lien", "Historique"]:
             if col not in df_tracker.columns:
                 df_tracker[col] = ""
 
@@ -306,6 +340,69 @@ with tab2:
                     conn_gsheets.update(data=df_tracker)
                     st.cache_data.clear()
                     st.rerun()
+
+            # --- BLOC HISTORIQUE CHRONOLOGIQUE ---
+            with st.container(border=True):
+                st.markdown("#### 📅 Historique des étapes")
+                history_list = parse_history(row_data.get("Historique", ""))
+
+                if not history_list:
+                    st.caption("Aucun historique enregistré pour cette offre.")
+                else:
+                    for h_idx, item in enumerate(history_list):
+                        h_col1, h_col2, h_col3 = st.columns([1.2, 3, 0.5], vertical_alignment="center")
+                        with h_col1:
+                            st.markdown(f"**`{item.get('date', '')}`**")
+                        with h_col2:
+                            st.write(item.get("etape", ""))
+                        with h_col3:
+                            if st.button("🗑️", key=f"del_hist_{selected_idx}_{h_idx}", help="Supprimer cette étape"):
+                                history_list.pop(h_idx)
+                                df_tracker.at[selected_idx, 'Historique'] = json.dumps(history_list, ensure_ascii=False)
+                                df_tracker.at[selected_idx, 'Statut'] = infer_main_status(history_list, row_data.get('Statut', 'À postuler'))
+                                conn_gsheets.update(data=df_tracker)
+                                st.cache_data.clear()
+                                st.rerun()
+
+                st.markdown("---")
+                # Formulaire d'ajout d'une étape
+                preset_steps = [
+                    "Candidature envoyée",
+                    "Entretien RH 1",
+                    "Entretien Manager 2",
+                    "Étude de cas",
+                    "Entretien Final 3",
+                    "Offre reçue",
+                    "Refus",
+                    "Autre (personnalisé)"
+                ]
+                add_col1, add_col2, add_col3 = st.columns([2.2, 1.3, 1], vertical_alignment="bottom")
+                with add_col1:
+                    chosen_step = st.selectbox("Nouvelle étape :", preset_steps, key=f"step_sel_{selected_idx}")
+                with add_col2:
+                    step_date = st.date_input("Date :", value=datetime.now(), format="DD/MM/YYYY", key=f"step_date_{selected_idx}")
+                with add_col3:
+                    add_clicked = st.button("➕ Ajouter", key=f"add_hist_{selected_idx}", use_container_width=True)
+
+                custom_step_text = ""
+                if chosen_step == "Autre (personnalisé)":
+                    custom_step_text = st.text_input("Intitulé personnalisé (ex: Entretien CPO 3) :", key=f"custom_step_{selected_idx}")
+
+                if add_clicked:
+                    final_step_label = custom_step_text.strip() if chosen_step == "Autre (personnalisé)" else chosen_step
+                    if final_step_label:
+                        new_entry = {
+                            "date": step_date.strftime("%d/%m/%Y"),
+                            "etape": final_step_label
+                        }
+                        history_list.append(new_entry)
+                        df_tracker.at[selected_idx, 'Historique'] = json.dumps(history_list, ensure_ascii=False)
+                        df_tracker.at[selected_idx, 'Statut'] = infer_main_status(history_list, row_data.get('Statut', 'À postuler'))
+                        conn_gsheets.update(data=df_tracker)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning("Indique un intitulé pour l'étape personnalisée.")
 
             if st.button("🗑️ Supprimer l'offre", use_container_width=True):
                 conn_gsheets.update(data=df_tracker.drop(selected_idx))
