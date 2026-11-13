@@ -29,22 +29,30 @@ sheet_offres = sh.sheet1
 sheet_presets = sh.worksheet("Feuille 2")
 
 MODELS_FALLBACK = [
-    "gemini-3.5-flash",
+    "gemini-2.5-flash-lite",
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash-lite"
+    "gemini-3.5-flash"
 ]
 
-def ask_gemini(prompt: str) -> str:
+def ask_gemini_fast(prompt: str) -> str:
+    """Appelle Gemini sans retry bloquant (bascule immédiate en cas de 429/404)."""
+    last_err = None
     for model_name in MODELS_FALLBACK:
         try:
-            resp = genai.GenerativeModel(model_name).generate_content(prompt)
+            model = genai.GenerativeModel(model_name)
+            resp = model.generate_content(
+                prompt,
+                request_options={"retry": None, "timeout": 30}
+            )
             if resp and resp.text:
+                print(f"🤖 Réponse obtenue via {model_name}")
                 return resp.text
         except Exception as e:
-            print(f"Modèle {model_name} indisponible : {e}")
-    raise RuntimeError("Aucun modèle Gemini n'a répondu.")
+            last_err = e
+            print(f"⚠️ {model_name} ignoré ({e})")
+    raise RuntimeError(f"Tous les modèles Gemini ont échoué : {last_err}")
 
-def parse_json_response(raw_text: str) -> dict:
+def parse_json_response(raw_text: str):
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text.strip())
     return json.loads(cleaned)
 
@@ -52,7 +60,6 @@ def parse_json_response(raw_text: str) -> dict:
 # 2. LECTURE DES CRITÈRES & DOUBLONS
 # ==========================================
 def get_existing_offers() -> tuple[set, set]:
-    """Récupère les liens et couples (entreprise, poste) déjà dans le tracker pour éviter les doublons."""
     records = sheet_offres.get_all_records()
     existing_links = set()
     existing_pairs = set()
@@ -67,7 +74,6 @@ def get_existing_offers() -> tuple[set, set]:
     return existing_links, existing_pairs
 
 def get_search_criteria() -> list[dict]:
-    """Lit les recherches sauvegardées dans Feuille 2."""
     records = sheet_presets.get_all_records()
     criteria = []
     for r in records:
@@ -81,12 +87,10 @@ def get_search_criteria() -> list[dict]:
 # 3. RECHERCHE WEB MULTI-SOURCES (TAVILY)
 # ==========================================
 def search_jobs_tavily(job: str, loc: str) -> list[dict]:
-    """Interroge Tavily sur LinkedIn, WTTJ, HelloWork et sites carrières (offres des 3 derniers jours)."""
     queries = [
         f'site:linkedin.com/jobs/view "stage" "{job}" "{loc}"',
         f'site:welcometothejungle.com/fr/companies "stage" "{job}" "{loc}"',
-        f'site:hellowork.com/fr-fr/emplois "stage" "{job}" "{loc}"',
-        f'"offre de stage" "{job}" "{loc}" 2027'
+        f'site:hellowork.com/fr-fr/emplois "stage" "{job}" "{loc}"'
     ]
     results = []
     seen_urls = set()
@@ -98,11 +102,11 @@ def search_jobs_tavily(job: str, loc: str) -> list[dict]:
                 json={
                     "api_key": TAVILY_API_KEY,
                     "query": q,
-                    "search_depth": "advanced",
-                    "max_results": 5,
-                    "days": 3  # Uniquement les pages indexées sur les 3 derniers jours
+                    "search_depth": "basic",
+                    "max_results": 4,
+                    "days": 7
                 },
-                timeout=20
+                timeout=15
             )
             data = resp.json()
             for item in data.get("results", []):
@@ -112,99 +116,102 @@ def search_jobs_tavily(job: str, loc: str) -> list[dict]:
                     results.append({
                         "title": item.get("title", ""),
                         "url": url,
-                        "content": item.get("content", "")
+                        "content": item.get("content", "")[:600]
                     })
         except Exception as e:
-            print(f"Erreur recherche Tavily ({q}) : {e}")
+            print(f"Erreur Tavily ({q}) : {e}")
     return results
 
 # ==========================================
-# 4. FILTRAGE & EXTRACTION PAR GEMINI
+# 4. FILTRAGE EN LOT (1 SEUL APPEL GEMINI)
 # ==========================================
-def evaluate_and_extract(offer: dict) -> dict | None:
-    """Demande à Gemini si l'offre correspond au profil de Pol et extrait les colonnes du Sheet."""
+def filter_batch_with_gemini(offers: list[dict]) -> list[dict]:
+    if not offers:
+        return []
+
     prompt = f"""
-    Tu es un assistant de recrutement pour Pol Cartron (étudiant en double diplôme Ingénieur INSA Rennes / Management Audencia).
-    Il cherche un STAGE DE FIN D'ÉTUDES de 6 mois en Product Management (PM) ou Product Ownership (PO), à Paris / Île-de-France, idéalement pour janvier/février 2027 (ou fin 2026 / début 2027).
+    Tu es un assistant de recrutement pour Pol Cartron (étudiant double diplôme Ingénieur INSA Rennes / Management Audencia).
+    Il cherche un STAGE de 6 mois en Product Management (PM) ou Product Ownership (PO), à Paris / Île-de-France, pour début 2027 (janvier/février 2027).
 
-    Analyse ce résultat web et détermine s'il s'agit d'une VRAIE offre de stage précise (pas une page de liste générale, pas un CDI, pas une alternance).
-    
-    Titre : {offer['title']}
-    URL : {offer['url']}
-    Contenu : {offer['content']}
+    Analyse la liste de résultats web ci-dessous et ne garde QUE les vraies offres de stage individuelles pertinentes (exclure les pages de listes/annuaires, les CDI, les alternances, ou les postes hors sujet).
 
-    Réponds UNIQUEMENT avec un JSON valide contenant exactement ces clés :
-    - "pertinent": true ou false
-    - "score": note de 1 à 10 sur l'adéquation avec le profil
-    - "Entreprise": nom de l'entreprise (ou "Inconnu")
+    Liste des résultats :
+    {json.dumps(offers, ensure_ascii=False)}
+
+    Retourne UNIQUEMENT un tableau JSON valide (ex: [{{...}}, {{...}}]) contenant les offres retenues (score >= 7/10) avec exactement ces clés pour chaque objet :
+    - "url": l'URL exacte de l'offre
+    - "Entreprise": nom de l'entreprise
     - "Poste": intitulé exact du poste
     - "Lieu": ville (ex: "Paris")
     - "Salaire": gratification si mentionnée (sinon "Inconnu")
-    - "Resume_Offre": résumé propre de l'offre en 4-5 lignes basé sur le contenu disponible
+    - "Resume_Offre": résumé clair de l'offre en 3-4 lignes
+    Si aucune offre n'est pertinente, retourne simplement [].
     """
     try:
-        parsed = parse_json_response(ask_gemini(prompt))
-        if parsed.get("pertinent") is True and int(parsed.get("score", 0)) >= 7:
-            return parsed
+        res = parse_json_response(ask_gemini_fast(prompt))
+        return res if isinstance(res, list) else []
     except Exception as e:
-        print(f"Erreur parsing Gemini pour {offer['url']} : {e}")
-    return None
+        print(f"Erreur batch Gemini : {e}")
+        return []
 
 # ==========================================
 # 5. EXÉCUTION PRINCIPALE
 # ==========================================
 def run_agent():
-    print("🚀 Démarrage de l'agent de veille...")
+    print("🚀 Démarrage de l'agent de veille rapide...")
     existing_links, existing_pairs = get_existing_offers()
     criteria_list = get_search_criteria()
     today_str = datetime.now().strftime("%d/%m/%Y")
-
-    # Vérifie l'ordre exact des colonnes de Feuille 1
     headers = sheet_offres.row_values(1)
-    added_count = 0
+
+    all_candidates = []
+    seen_batch_urls = set()
 
     for crit in criteria_list:
         print(f"🔍 Recherche : {crit['job']} à {crit['loc']}")
-        raw_offers = search_jobs_tavily(crit["job"], crit["loc"])
+        for item in search_jobs_tavily(crit["job"], crit["loc"]):
+            u = item["url"].lower()
+            if u not in existing_links and u not in seen_batch_urls:
+                seen_batch_urls.add(u)
+                all_candidates.append(item)
 
-        for raw in raw_offers:
-            if raw["url"].lower() in existing_links:
-                continue
+    print(f"📦 {len(all_candidates)} nouvelles URLs à analyser par Gemini...")
+    selected_offers = filter_batch_with_gemini(all_candidates)
+    print(f"🎯 {len(selected_offers)} offre(s) retenue(s) par Gemini.")
 
-            extracted = evaluate_and_extract(raw)
-            if not extracted:
-                continue
+    added_count = 0
+    for offer in selected_offers:
+        ent = str(offer.get("Entreprise", "Inconnu")).strip()
+        poste = str(offer.get("Poste", "Inconnu")).strip()
+        url = str(offer.get("url", "")).strip()
 
-            ent = extracted.get("Entreprise", "Inconnu").strip()
-            poste = extracted.get("Poste", "Inconnu").strip()
-            if ent.lower() == "inconnu" or (ent.lower(), poste.lower()) in existing_pairs:
-                continue
+        if not ent or ent.lower() == "inconnu" or (ent.lower(), poste.lower()) in existing_pairs:
+            continue
 
-            # Prépare la nouvelle ligne alignée avec les en-têtes du Sheet
-            row_dict = {
-                "Entreprise": ent,
-                "Poste": poste,
-                "Lien": raw["url"],
-                "Lieu": extracted.get("Lieu", crit["loc"]),
-                "Salaire": extracted.get("Salaire", "Inconnu"),
-                "Date": today_str,
-                "Statut": "À postuler",
-                "Historique": json.dumps([{"date": today_str, "etape": "Trouvée par l'Agent IA"}], ensure_ascii=False),
-                "Texte Offre": f"{extracted.get('Resume_Offre', '')}\n\nSource : {raw['content']}",
-                "Résumé IA": "",
-                "Entretien IA": "",
-                "Lettre de Motivation": ""
-            }
+        row_dict = {
+            "Entreprise": ent,
+            "Poste": poste,
+            "Lien": url,
+            "Lieu": offer.get("Lieu", "Paris"),
+            "Salaire": offer.get("Salaire", "Inconnu"),
+            "Date": today_str,
+            "Statut": "À postuler",
+            "Historique": json.dumps([{"date": today_str, "etape": "Trouvée par l'Agent IA"}], ensure_ascii=False),
+            "Texte Offre": offer.get("Resume_Offre", ""),
+            "Résumé IA": "",
+            "Entretien IA": "",
+            "Lettre de Motivation": ""
+        }
 
-            ordered_row = [row_dict.get(col, "") for col in headers]
-            sheet_offres.append_row(ordered_row, value_input_option="USER_ENTERED")
+        ordered_row = [row_dict.get(col, "") for col in headers]
+        sheet_offres.append_row(ordered_row, value_input_option="USER_ENTERED")
 
-            existing_links.add(raw["url"].lower())
-            existing_pairs.add((ent.lower(), poste.lower()))
-            added_count += 1
-            print(f"✅ Ajoutée : {ent} - {poste}")
+        existing_links.add(url.lower())
+        existing_pairs.add((ent.lower(), poste.lower()))
+        added_count += 1
+        print(f"✅ Ajoutée : {ent} - {poste}")
 
-    print(f"🏁 Terminé ! {added_count} nouvelle(s) offre(s) ajoutée(s).")
+    print(f"🏁 Terminé en quelques secondes ! {added_count} nouvelle(s) offre(s) ajoutée(s).")
 
 if __name__ == "__main__":
     run_agent()
