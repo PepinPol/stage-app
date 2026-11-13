@@ -5,7 +5,9 @@ import urllib.parse
 import google.generativeai as genai
 import json
 import time
+import re
 from datetime import datetime
+from fpdf import FPDF
 
 st.set_page_config(page_title="Tracker de Stage PM", layout="centered")
 
@@ -74,6 +76,94 @@ def infer_main_status(history_list: list, current_status: str) -> str:
     elif "ajout" in last_step:
         return "À postuler"
     return current_status
+
+# --- GÉNÉRATEUR PDF LETTRE DE MOTIVATION (ATS-FRIENDLY) ---
+def sanitize_pdf_text(text: str) -> str:
+    """Remplace les caractères Unicode spéciaux pour compatibilité Helvetica standard (Latin-1/Windows-1252)."""
+    replacements = {
+        "€": "EUR ",
+        "’": "'",
+        "‘": "'",
+        "“": '"',
+        "”": '"',
+        "–": "-",
+        "—": "-",
+        "…": "...",
+        "\u00a0": " "
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes:
+    """Génère un PDF A4 propre (1 page) façon Google Docs avec lien LinkedIn cliquable."""
+    pdf = FPDF(format="A4", unit="mm")
+    pdf.set_margins(left=20, top=16, right=20)
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # 1. En-tête Candidat
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_text_color(20, 20, 20)
+    pdf.cell(0, 6.5, sanitize_pdf_text("Pol CARTRON"), new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(60, 60, 60)
+    pdf.cell(0, 5, sanitize_pdf_text("Dual degree Engineering/Management student"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, sanitize_pdf_text("INSA Rennes / Audencia"), new_x="LMARGIN", new_y="NEXT")
+
+    # Coordonnées + lien LinkedIn cliquable
+    pdf.set_font("Helvetica", "", 9.5)
+    pdf.set_text_color(60, 60, 60)
+    contact_prefix = sanitize_pdf_text("pol.cartron@gmail.com | (+33) 7 83 86 71 64 | ")
+    pdf.write(5, contact_prefix)
+    
+    pdf.set_text_color(26, 86, 219)
+    pdf.set_font("Helvetica", "U", 9.5)
+    pdf.write(5, "linkedin.com/in/pol-cartron", "https://www.linkedin.com/in/pol-cartron-419964239/")
+    pdf.ln(9)
+
+    # 2. Bloc Destinataire & Date
+    pdf.set_text_color(20, 20, 20)
+    pdf.set_font("Helvetica", "B", 10.5)
+    clean_company = sanitize_pdf_text(company.strip() if company and company.strip().lower() != "inconnu" else "")
+    if clean_company:
+        pdf.cell(0, 5.2, clean_company, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 10)
+    clean_loc = sanitize_pdf_text(location.strip() if location and location.strip().lower() != "inconnu" else "Paris, France")
+    if "france" not in clean_loc.lower() and "paris" in clean_loc.lower():
+        clean_loc = f"{clean_loc}, France"
+    pdf.cell(0, 5.2, clean_loc, new_x="LMARGIN", new_y="NEXT")
+
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    pdf.cell(0, 5.2, today_str, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+
+    # 3. Corps de la lettre
+    # Nettoyage des éventuels marqueurs Markdown ** pour un rendu propre
+    clean_body = body_text.replace("**", "").strip()
+    paragraphs = clean_body.split("\n\n")
+
+    for p in paragraphs:
+        p_clean = p.strip()
+        if not p_clean:
+            continue
+        if p_clean.startswith("Subject:"):
+            pdf.set_font("Helvetica", "B", 10.5)
+            pdf.multi_cell(0, 5.2, sanitize_pdf_text(p_clean))
+            pdf.ln(3.5)
+        elif p_clean in ["Pol CARTRON", "Sincerely,"]:
+            pdf.set_font("Helvetica", "B" if p_clean == "Pol CARTRON" else "", 10.5)
+            pdf.multi_cell(0, 5.2, sanitize_pdf_text(p_clean))
+            if p_clean == "Sincerely,":
+                pdf.ln(3)
+        else:
+            pdf.set_font("Helvetica", "", 10.2)
+            pdf.multi_cell(0, 5.0, sanitize_pdf_text(p_clean))
+            pdf.ln(3.2)
+
+    return bytes(pdf.output())
 
 # ==========================================
 # GESTION DES PRÉRÉGLAGES VIA "FEUILLE 2"
@@ -365,7 +455,6 @@ with tab2:
                                 st.rerun()
 
                 st.markdown("---")
-                # Formulaire d'ajout d'une étape
                 preset_steps = [
                     "Candidature envoyée",
                     "Entretien RH 1",
@@ -412,7 +501,8 @@ with tab2:
 
             st.markdown("---")
             
-            col_res, col_ent, col_lm = st.columns(3)
+            # --- ANALYSES IA : RÉSUMÉ & ENTRETIEN ---
+            col_res, col_ent = st.columns(2)
             
             with col_res:
                 st.markdown("<h4 style='text-align: center;'>Résumé</h4>", unsafe_allow_html=True)
@@ -460,36 +550,38 @@ with tab2:
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erreur Entretien : {e}")
-            
-            with col_lm:
-                def generer_lettre():
-                    with st.spinner("Writing cover letter..."):
-                        prompt_lm = f"""
-                        Act as a Product Hiring Expert. Based on the job description below, write two tailored elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
+
+            st.markdown("---")
+
+            # --- LETTRE DE MOTIVATION (ÉDITION + EXPORT PDF DIRECT) ---
+            def generer_lettre():
+                with st.spinner("Writing cover letter..."):
+                    prompt_lm = f"""
+                    Act as a Product Hiring Expert. Based on the job description below, write two tailored elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
+                    
+                    1. "paragraphe_vous": 2 to 3 sentences maximum in English explaining why the company's mission, product, or technological challenges are particularly appealing. Be specific and include keywords from the job description.
+                    2. "phrase_nous": 1 impactful sentence in English bridging the candidate's cross-functional project management and delivery skills with the primary need described in the role.
+                    
+                    Return the result ONLY as a valid JSON object with exactly these two keys ("paragraphe_vous" and "phrase_nous"). Do not include any extra text before or after.
+                    
+                    Job description: {row_data.get('Texte Offre')}
+                    """
+                    try:
+                        resp_text = call_gemini_with_fallback(prompt_lm)
+                        raw_json = resp_text.replace('```json', '').replace('```', '').strip()
+                        dynamic_parts = json.loads(raw_json)
                         
-                        1. "paragraphe_vous": 2 to 3 sentences maximum in English explaining why the company's mission, product, or technological challenges are particularly appealing. Be specific and include keywords from the job description.
-                        2. "phrase_nous": 1 impactful sentence in English bridging the candidate's cross-functional project management and delivery skills with the primary need described in the role.
-                        
-                        Return the result ONLY as a valid JSON object with exactly these two keys ("paragraphe_vous" and "phrase_nous"). Do not include any extra text before or after.
-                        
-                        Job description: {row_data.get('Texte Offre')}
-                        """
-                        try:
-                            resp_text = call_gemini_with_fallback(prompt_lm)
-                            raw_json = resp_text.replace('```json', '').replace('```', '').strip()
-                            dynamic_parts = json.loads(raw_json)
-                            
-                            lettre_finale = f"""**Subject:** Application for the {row_data.get('Poste')} Internship
+                        lettre_finale = f"""Subject: Application for the {row_data.get('Poste')} Internship
 
 Dear Hiring Team,
 
-Currently pursuing an Engineering and Management dual degree at INSA Rennes and Audencia Business School, I am seeking a 6-month internship in Paris starting in January/February 2027. It is with great enthusiasm that I submit my application.
+Currently pursuing an Engineering and Management dual degree at INSA Rennes and Audencia, I am seeking a 6-month {row_data.get('Poste')} internship in Paris starting in January/February 2027. It is with great enthusiasm that I submit my application.
 
 {dynamic_parts.get("paragraphe_vous", "")}
 
-My hybrid background allows me to naturally bridge the gap between business strategy and technical execution. My engineering curriculum at INSA Rennes provided me with strong analytical rigor, while my Master's program at Audencia honed my skills in product strategy, agile methodologies (Scrum, Kanban), and Go-to-Market execution. Deeply hands-on, I actively design and build my own technical products. Specifically, I led the end-to-end product lifecycle of a mobile application built with Flutter, and engineered a web application in Python integrating the Google Gemini API.
+My hybrid background allows me to naturally bridge the gap between business strategy and technical execution. My engineering curriculum at INSA Rennes provided me with strong analytical rigor, while my Master's program at Audencia honed my skills in product strategy, agile methodologies (Scrum, Kanban), and Go-to-Market execution. Hands-on by nature, I actively design and build technical products. Specifically, I led the end-to-end lifecycle of a mobile application built with Flutter, and engineered an AI-powered web application in Python integrating the Google Gemini API.
 
-Product leadership requires strong interpersonal influence to align stakeholders. As President of the Student Union, I oversaw 1,300 members and managed a €1M budget, successfully steering large-scale initiatives from concept to execution. {dynamic_parts.get("phrase_nous", "")}
+Furthermore, product success relies heavily on stakeholder alignment and leadership without authority. As President of the INSA Rennes Student Union, I steered campus operations for 1,300 members and managed a €1M operating budget across 40 student initiatives. {dynamic_parts.get("phrase_nous", "")}
 
 I would welcome the opportunity to discuss your product vision and demonstrate how my dual technical and business skillset can contribute to your success.
 
@@ -497,30 +589,63 @@ Thank you for your time and consideration.
 
 Sincerely,
 
-**Pol CARTRON**
-"""
-                            df_tracker.at[selected_idx, 'Lettre de Motivation'] = lettre_finale
-                            conn_gsheets.update(data=df_tracker)
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erreur LM : {e}")
+Pol CARTRON"""
+                        df_tracker.at[selected_idx, 'Lettre de Motivation'] = lettre_finale
+                        conn_gsheets.update(data=df_tracker)
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erreur LM : {e}")
 
+            with st.container(border=True):
                 current_lm = row_data.get('Lettre de Motivation', '').strip()
                 
                 if current_lm:
-                    col_lm_title, col_lm_regen = st.columns([3, 1], vertical_alignment="center")
+                    col_lm_title, col_lm_regen = st.columns([4, 1], vertical_alignment="center")
                     with col_lm_title:
-                        st.markdown("<h4 style='text-align: center; margin: 0;'>Lettre</h4>", unsafe_allow_html=True)
+                        st.markdown("#### 📝 Lettre de Motivation & Export PDF")
                     with col_lm_regen:
-                        if st.button("🔄", key="btn_regen_lm", help="Regénérer la lettre"):
+                        if st.button("🔄 Regénérer", key="btn_regen_lm", use_container_width=True, help="Générer une nouvelle version via IA"):
                             generer_lettre()
-                            
-                    with st.expander("Voir la lettre"):
-                        st.markdown(current_lm)
+
+                    # Zone d'édition manuelle
+                    edited_lm = st.text_area(
+                        "Modifier le texte avant export PDF :",
+                        value=current_lm,
+                        height=300,
+                        key=f"lm_editor_{selected_idx}"
+                    )
+
+                    # Génération du PDF à la volée à partir du texte affiché/édité
+                    pdf_bytes = build_cover_letter_pdf(
+                        company=row_data.get("Entreprise", ""),
+                        location=row_data.get("Lieu", "Paris, France"),
+                        body_text=edited_lm
+                    )
+                    safe_company = re.sub(r'[^a-zA-Z0-9_-]', '_', row_data.get('Entreprise', 'Company').strip())
+                    pdf_filename = f"Cover_Letter_Pol_Cartron_{safe_company}.pdf"
+
+                    btn_save_lm, btn_dl_pdf = st.columns(2)
+                    with btn_save_lm:
+                        if st.button("💾 Sauvegarder les modifs", key=f"save_lm_{selected_idx}", use_container_width=True):
+                            df_tracker.at[selected_idx, 'Lettre de Motivation'] = edited_lm
+                            conn_gsheets.update(data=df_tracker)
+                            st.cache_data.clear()
+                            st.success("Modifications sauvegardées !")
+                            time.sleep(0.8)
+                            st.rerun()
+                    with btn_dl_pdf:
+                        st.download_button(
+                            label="📥 Télécharger en PDF",
+                            data=pdf_bytes,
+                            file_name=pdf_filename,
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
+                        )
                 else:
-                    st.markdown("<h4 style='text-align: center;'>Lettre</h4>", unsafe_allow_html=True)
-                    if st.button("📝 Générer", key="btn_lm", use_container_width=True):
+                    st.markdown("<h4 style='text-align: center;'>Lettre de Motivation</h4>", unsafe_allow_html=True)
+                    if st.button("📝 Générer la lettre & le PDF", key="btn_lm", use_container_width=True):
                         generer_lettre()
             
             with st.expander("Texte original"):

@@ -2,3 +2,4 @@ streamlit
 st-gsheets-connection
 pandas
 google-generativeai
+Fpdf2
