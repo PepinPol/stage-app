@@ -536,16 +536,57 @@ with tab2:
         if st.session_state.selected_offer_idx not in valid_indices:
             st.session_state.selected_offer_idx = None
 
-        # --- VUE 1 : LISTE DES OFFRES ---
+        # --- VUE 1 : LISTE DES OFFRES AVEC TRI ---
         if st.session_state.selected_offer_idx is None:
             st.markdown("<h2 style='text-align: center;'>Mes Offres Sauvegardées</h2>", unsafe_allow_html=True)
 
             if valid_indices.empty:
                 st.info("Aucune offre sauvegardée pour le moment.")
             else:
-                st.caption(f"{len(valid_indices)} offre(s) enregistrée(s)")
+                col_sort_by, col_sort_dir = st.columns([2, 1.5])
+                with col_sort_by:
+                    sort_criterion = st.selectbox(
+                        "Trier par :",
+                        options=["Ordre d'ajout (Excel)", "Nom (Entreprise)", "État (Statut)"],
+                        key="tracker_sort_by"
+                    )
+                with col_sort_dir:
+                    sort_order = st.selectbox(
+                        "Ordre :",
+                        options=["Décroissant (Récent / Z→A)", "Croissant (Ancien / A→Z)"],
+                        key="tracker_sort_dir"
+                    )
 
-                for idx in valid_indices:
+                is_ascending = sort_order.startswith("Croissant")
+                df_valid = df_tracker.loc[valid_indices].copy()
+
+                if sort_criterion == "Ordre d'ajout (Excel)":
+                    sorted_indices = df_valid.index.sort_values(ascending=is_ascending)
+                elif sort_criterion == "Nom (Entreprise)":
+                    df_valid["_sort_key"] = df_valid["Entreprise"].str.strip().str.lower()
+                    sorted_indices = df_valid.sort_values(
+                        by=["_sort_key", "Poste"],
+                        ascending=is_ascending,
+                        kind="mergesort"
+                    ).index
+                else:
+                    status_rank = {
+                        "À postuler": 1,
+                        "Envoyée": 2,
+                        "Entretien": 3,
+                        "Offre": 4,
+                        "Refus": 5
+                    }
+                    df_valid["_sort_key"] = df_valid["Statut"].map(status_rank).fillna(99)
+                    sorted_indices = df_valid.sort_values(
+                        by="_sort_key",
+                        ascending=is_ascending,
+                        kind="mergesort"
+                    ).index
+
+                st.caption(f"{len(sorted_indices)} offre(s) enregistrée(s)")
+
+                for idx in sorted_indices:
                     row = df_tracker.loc[idx]
                     status = row.get("Statut", "À postuler")
                     badge_color = STATUS_COLORS.get(status, "#64748b")
