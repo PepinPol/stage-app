@@ -3,3 +3,6 @@ st-gsheets-connection
 pandas
 google-generativeai
 fpdf2
+gspread
+google-auth
+requests
