@@ -15,9 +15,9 @@ from fpdf import FPDF
 st.set_page_config(page_title="Tracker de Stage PM", layout="centered")
 
 MODELS_FALLBACK_LIST = [
-    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
     "gemini-3.7-flash",
     "gemini-2.5-flash-lite"
 ]
@@ -58,11 +58,11 @@ DEFAULT_AGENT_CONFIG = {
     "loc": "Paris",
     "days": 4,
     "weekdays": ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"],
-    "sites": ["LinkedIn", "Welcome to the Jungle", "HelloWork"]
+    "sites": ["LinkedIn", "Welcome to the Jungle", "HelloWork", "Indeed"]
 }
 
 ALL_WEEKDAYS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-ALL_SITES = ["LinkedIn", "Welcome to the Jungle", "HelloWork", "Web global"]
+ALL_SITES = ["LinkedIn", "Welcome to the Jungle", "HelloWork", "Indeed", "Web global"]
 
 # ==========================================
 # INITIALISATION IA & CONNEXION SHEETS
@@ -78,12 +78,16 @@ conn_gsheets = st.connection("gsheets", type=GSheetsConnection)
 
 
 def call_gemini_with_fallback(prompt: str) -> str:
+    """Appelle Gemini sans retry bloquant : bascule en <0.1s si un modèle est saturé (429/503)."""
     if not gemini_configured:
         raise RuntimeError("Gemini n'est pas configuré.")
     last_error = None
     for model_name in MODELS_FALLBACK_LIST:
         try:
-            response = genai.GenerativeModel(model_name).generate_content(prompt)
+            response = genai.GenerativeModel(model_name).generate_content(
+                prompt,
+                request_options={"retry": None, "timeout": 25}
+            )
             if response and response.text:
                 return response.text
         except Exception as e:
@@ -94,6 +98,143 @@ def call_gemini_with_fallback(prompt: str) -> str:
 def parse_llm_json(raw_text: str) -> dict:
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text.strip())
     return json.loads(cleaned)
+
+
+# ==========================================
+# GÉNÉRATION IA DES 3 LIVRABLES (RÉSUMÉ / ENTRETIEN / LM)
+# ==========================================
+def generate_resume_text(offer_text: str) -> str:
+    prompt = (
+        "Agis comme un Product Manager Senior. Résume les missions de cette offre "
+        f"en exactement 3 points à puces clairs et concis.\nOffre : {offer_text}"
+    )
+    return call_gemini_with_fallback(prompt)
+
+
+def generate_entretien_text(offer_text: str) -> str:
+    prompt = f"""
+    Agis comme le Lead Product. Divise ta réponse en 2 :
+    ### Fiche d'identité
+    (Création, PDG, Siège, Employés, Concurrents, CA)
+    ### Préparation (PM/PO)
+    1. 3 valeurs clés.
+    2. 3 questions techniques (Orientées Product).
+    3. Mini-étude de cas.
+    Offre : {offer_text}
+    """
+    return call_gemini_with_fallback(prompt)
+
+
+def generate_cover_letter_text(poste_label: str, offer_text: str) -> str:
+    prompt_lm = f"""
+    Act as a Product Hiring Expert. Based on the job description below, write two tailored elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
+    
+    1. "paragraphe_vous": 2 to 3 sentences maximum in English explaining why the company's mission, product, or technological challenges are particularly appealing. Be specific and include keywords from the job description.
+    2. "phrase_nous": 1 impactful sentence in English bridging the candidate's cross-functional project management and delivery skills with the primary need described in the role.
+    
+    Return the result ONLY as a valid JSON object with exactly these two keys ("paragraphe_vous" and "phrase_nous"). Do not include any extra text before or after.
+    
+    Job description: {offer_text}
+    """
+    dynamic_parts = parse_llm_json(call_gemini_with_fallback(prompt_lm))
+    return f"""Subject: Application for the {poste_label} Internship
+
+Dear Hiring Team,
+
+Currently pursuing an Engineering and Management dual degree at INSA Rennes and Audencia, I am seeking a 6-month {poste_label} internship in Paris starting in January/February 2027. It is with great enthusiasm that I submit my application.
+
+{dynamic_parts.get("paragraphe_vous", "")}
+
+My hybrid background allows me to naturally bridge the gap between business strategy and technical execution. My engineering curriculum at INSA Rennes provided me with strong analytical rigor, while my Master's program at Audencia honed my skills in product strategy, agile methodologies (Scrum, Kanban), and Go-to-Market execution. Hands-on by nature, I actively design and build technical products. Specifically, I led the end-to-end lifecycle of a mobile application built with Flutter, and engineered an AI-powered web application in Python integrating the Google Gemini API.
+
+Furthermore, product success relies heavily on stakeholder alignment and leadership without authority. As President of the INSA Rennes Student Union, I steered campus operations for 1,300 members and managed a €1M operating budget across 40 student initiatives. {dynamic_parts.get("phrase_nous", "")}
+
+I would welcome the opportunity to discuss your product vision and demonstrate how my dual technical and business skillset can contribute to your success.
+
+Thank you for your time and consideration.
+
+Sincerely,
+
+Pol CARTRON"""
+
+
+def process_and_save_offer_with_progress(
+    offer_text: str,
+    offer_link: str,
+    preset_meta: dict | None = None,
+    step_label: str = "Ajoutée au tracker"
+) -> None:
+    """Exécute tout le pipeline d'ajout avec suivi en temps réel et barre de pourcentage."""
+    progress_bar = st.progress(0, text="0% — Initialisation...")
+    with st.status("Traitement de l'offre en cours...", expanded=True) as status_box:
+        # Étape 1 : Extraction des métadonnées (si ajout manuel)
+        if preset_meta is None:
+            progress_bar.progress(10, text="10% — Extraction de l'entreprise, du poste et du salaire...")
+            st.write("🔍 Lecture et structuration des informations de l'annonce...")
+            prompt_json = (
+                'Extrais les infos sous forme JSON valide avec EXACTEMENT ces clés : '
+                '"Entreprise", "Poste", "Lieu", "Salaire". (Mets "Inconnu" si introuvable).\n'
+                f"Offre : {offer_text}"
+            )
+            meta = parse_llm_json(call_gemini_with_fallback(prompt_json))
+        else:
+            meta = preset_meta
+
+        entreprise = meta.get("Entreprise", "Inconnu")
+        poste = meta.get("Poste", "Inconnu")
+        lieu = meta.get("Lieu", "Paris")
+        salaire = meta.get("Salaire", "Inconnu")
+
+        # Étape 2 : Résumé IA
+        progress_bar.progress(35, text="35% — Génération du résumé des missions...")
+        st.write("✨ Rédaction du résumé en 3 points clés...")
+        try:
+            resume_ia = generate_resume_text(offer_text)
+        except Exception as e:
+            resume_ia = f"Erreur génération résumé : {e}"
+
+        # Étape 3 : Préparation Entretien
+        progress_bar.progress(60, text="60% — Préparation de la fiche entreprise & entretien...")
+        st.write("🎯 Analyse de l'entreprise et questions d'entretien...")
+        try:
+            entretien_ia = generate_entretien_text(offer_text)
+        except Exception as e:
+            entretien_ia = f"Erreur génération entretien : {e}"
+
+        # Étape 4 : Lettre de Motivation
+        progress_bar.progress(82, text="82% — Rédaction de la lettre de motivation (EN)...")
+        st.write("📝 Rédaction de la lettre de motivation sur-mesure...")
+        try:
+            lm_ia = generate_cover_letter_text(poste, offer_text)
+        except Exception as e:
+            lm_ia = f"Erreur génération LM : {e}"
+
+        # Étape 5 : Sauvegarde Google Sheets
+        progress_bar.progress(95, text="95% — Enregistrement dans Google Sheets...")
+        st.write("💾 Sauvegarde dans la base de données...")
+        df_current = fetch_sheet_df()
+        today_str = datetime.now().strftime("%d/%m/%Y")
+
+        new_row = {
+            "Entreprise": entreprise,
+            "Poste": poste,
+            "Lien": offer_link.strip(),
+            "Lieu": lieu,
+            "Salaire": salaire,
+            "Date": today_str,
+            "Statut": "À postuler",
+            "Historique": json.dumps([{"date": today_str, "etape": step_label}], ensure_ascii=False),
+            "Texte Offre": offer_text,
+            "Résumé IA": resume_ia,
+            "Entretien IA": entretien_ia,
+            "Lettre de Motivation": lm_ia
+        }
+
+        updated_df = pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True).fillna("")
+        update_sheet_df(updated_df)
+
+        progress_bar.progress(100, text="100% — Offre enregistrée et analysée !")
+        status_box.update(label=f"✅ {entreprise} — {poste} prête !", state="complete", expanded=False)
 
 
 # ==========================================
@@ -115,7 +256,6 @@ def update_sheet_df(df: pd.DataFrame, worksheet: str | None = None) -> None:
 
 
 def load_feuille2_data() -> tuple[dict, dict]:
-    """Charge à la fois les recherches sauvegardées (Onglet 1) et la config de l'agent (Onglet 3) depuis Feuille 2."""
     default_presets = {
         "Product Manager - Paris": {"job": "product manager", "loc": "Paris"},
         "Product Owner - Paris": {"job": "product owner", "loc": "Paris"}
@@ -182,7 +322,7 @@ def infer_main_status(history_list: list, current_status: str) -> str:
         return "Entretien"
     if any(k in last_step for k in ("envoy", "postul")):
         return "Envoyée"
-    if "ajout" in last_step:
+    if "ajout" in last_step or "valid" in last_step:
         return "À postuler"
     return current_status
 
@@ -204,7 +344,6 @@ def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
-    # 1. En-tête Candidat (gauche)
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(20, 20, 20)
     pdf.cell(0, 6, "Pol CARTRON", new_x="LMARGIN", new_y="NEXT")
@@ -219,7 +358,6 @@ def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes
         pdf.cell(0, 4.8, sanitize_pdf_text(line), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
-    # 2. Bloc Destinataire & Date (droite)
     pdf.set_text_color(20, 20, 20)
     clean_company = sanitize_pdf_text(company.strip()) if company and company.strip().lower() != "inconnu" else ""
     if clean_company:
@@ -234,7 +372,6 @@ def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes
     pdf.cell(0, 5, datetime.now().strftime("%d/%m/%Y"), align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
 
-    # 3. Corps de la lettre
     for p in body_text.replace("**", "").strip().split("\n\n"):
         p_clean = p.strip()
         if not p_clean:
@@ -369,41 +506,19 @@ with tab1:
     offer_link = st.text_input("Lien de l'offre (optionnel) :")
     offer_text = st.text_area("Description de l'offre :", height=150)
 
-    if st.button("Ajouter au Tracker", type="primary", use_container_width=True):
+    if st.button("Ajouter au Tracker (avec Résumé, Entretien & LM)", type="primary", use_container_width=True):
         if offer_text.strip() and gemini_configured:
-            with st.spinner("Extraction via IA..."):
-                prompt_json = (
-                    'Extrais les infos sous forme JSON valide avec EXACTEMENT ces clés : '
-                    '"Entreprise", "Poste", "Lieu", "Salaire". (Mets "Inconnu" si introuvable).\n'
-                    f"Offre : {offer_text}"
+            try:
+                process_and_save_offer_with_progress(
+                    offer_text=offer_text,
+                    offer_link=offer_link,
+                    preset_meta=None,
+                    step_label="Ajoutée au tracker"
                 )
-                try:
-                    extracted_data = parse_llm_json(call_gemini_with_fallback(prompt_json))
-                    df_current = fetch_sheet_df()
-                    today_str = datetime.now().strftime("%d/%m/%Y")
-
-                    new_row = {
-                        "Entreprise": extracted_data.get("Entreprise", "Inconnu"),
-                        "Poste": extracted_data.get("Poste", "Inconnu"),
-                        "Lien": offer_link.strip(),
-                        "Lieu": extracted_data.get("Lieu", ""),
-                        "Salaire": extracted_data.get("Salaire", ""),
-                        "Date": today_str,
-                        "Statut": "À postuler",
-                        "Historique": json.dumps([{"date": today_str, "etape": "Ajoutée au tracker"}], ensure_ascii=False),
-                        "Texte Offre": offer_text,
-                        "Résumé IA": "",
-                        "Entretien IA": "",
-                        "Lettre de Motivation": ""
-                    }
-
-                    updated_df = pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True).fillna("")
-                    update_sheet_df(updated_df)
-                    st.success("Enregistrée avec date du jour !")
-                    time.sleep(0.8)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erreur : {e}")
+                time.sleep(0.8)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erreur lors de l'ajout : {e}")
         else:
             st.warning("Colle le texte de l'offre d'abord !")
 
@@ -561,157 +676,83 @@ with tab2:
             st.markdown("---")
 
             # ========================================================
-            # 1. LETTRE DE MOTIVATION & EXPORT PDF
+            # 1. LETTRE DE MOTIVATION & EXPORT PDF (Regénération conservée)
             # ========================================================
-            def generer_lettre():
-                with st.spinner("Writing cover letter..."):
-                    prompt_lm = f"""
-                    Act as a Product Hiring Expert. Based on the job description below, write two tailored elements in English to complete the cover letter of an Engineering & Management dual-degree candidate:
-                    
-                    1. "paragraphe_vous": 2 to 3 sentences maximum in English explaining why the company's mission, product, or technological challenges are particularly appealing. Be specific and include keywords from the job description.
-                    2. "phrase_nous": 1 impactful sentence in English bridging the candidate's cross-functional project management and delivery skills with the primary need described in the role.
-                    
-                    Return the result ONLY as a valid JSON object with exactly these two keys ("paragraphe_vous" and "phrase_nous"). Do not include any extra text before or after.
-                    
-                    Job description: {row_data.get('Texte Offre')}
-                    """
+            def regenerer_lettre():
+                with st.spinner("Regénération de la lettre de motivation..."):
                     try:
-                        dynamic_parts = parse_llm_json(call_gemini_with_fallback(prompt_lm))
-                        poste_label = row_data.get("Poste", "")
-                        lettre_finale = f"""Subject: Application for the {poste_label} Internship
-
-Dear Hiring Team,
-
-Currently pursuing an Engineering and Management dual degree at INSA Rennes and Audencia, I am seeking a 6-month {poste_label} internship in Paris starting in January/February 2027. It is with great enthusiasm that I submit my application.
-
-{dynamic_parts.get("paragraphe_vous", "")}
-
-My hybrid background allows me to naturally bridge the gap between business strategy and technical execution. My engineering curriculum at INSA Rennes provided me with strong analytical rigor, while my Master's program at Audencia honed my skills in product strategy, agile methodologies (Scrum, Kanban), and Go-to-Market execution. Hands-on by nature, I actively design and build technical products. Specifically, I led the end-to-end lifecycle of a mobile application built with Flutter, and engineered an AI-powered web application in Python integrating the Google Gemini API.
-
-Furthermore, product success relies heavily on stakeholder alignment and leadership without authority. As President of the INSA Rennes Student Union, I steered campus operations for 1,300 members and managed a €1M operating budget across 40 student initiatives. {dynamic_parts.get("phrase_nous", "")}
-
-I would welcome the opportunity to discuss your product vision and demonstrate how my dual technical and business skillset can contribute to your success.
-
-Thank you for your time and consideration.
-
-Sincerely,
-
-Pol CARTRON"""
-                        df_tracker.at[selected_idx, "Lettre de Motivation"] = lettre_finale
+                        nouvelle_lm = generate_cover_letter_text(
+                            poste_label=row_data.get("Poste", ""),
+                            offer_text=row_data.get("Texte Offre", "")
+                        )
+                        df_tracker.at[selected_idx, "Lettre de Motivation"] = nouvelle_lm
                         update_sheet_df(df_tracker)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Erreur LM : {e}")
+                        st.error(f"Erreur regénération LM : {e}")
 
             current_lm = row_data.get("Lettre de Motivation", "").strip()
             with st.expander("📝 Lettre de Motivation & Export PDF", expanded=bool(current_lm)):
-                if current_lm:
-                    col_lm_info, col_lm_regen = st.columns([4, 1], vertical_alignment="center")
-                    with col_lm_info:
-                        st.caption("Modifie le texte ci-dessous si besoin puis télécharge directement ton PDF A4.")
-                    with col_lm_regen:
-                        if st.button("🔄 Regénérer", key="btn_regen_lm", use_container_width=True, help="Générer une nouvelle version via IA"):
-                            generer_lettre()
+                col_lm_info, col_lm_regen = st.columns([4, 1], vertical_alignment="center")
+                with col_lm_info:
+                    st.caption("Modifie le texte ci-dessous si besoin puis télécharge directement ton PDF A4.")
+                with col_lm_regen:
+                    if st.button("🔄 Regénérer", key="btn_regen_lm", use_container_width=True, help="Générer une nouvelle version via IA"):
+                        regenerer_lettre()
 
-                    edited_lm = st.text_area(
-                        "Contenu de la lettre :",
-                        value=current_lm,
-                        height=300,
-                        key=f"lm_editor_{selected_idx}",
-                        label_visibility="collapsed"
+                edited_lm = st.text_area(
+                    "Contenu de la lettre :",
+                    value=current_lm,
+                    height=300,
+                    key=f"lm_editor_{selected_idx}",
+                    label_visibility="collapsed"
+                )
+
+                safe_company = re.sub(r"[^a-zA-Z0-9_-]", "_", row_data.get("Entreprise", "Entreprise").strip()).strip("_")
+                pdf_filename = f"LM_Pol_Cartron_{safe_company}.pdf"
+                pdf_bytes = build_cover_letter_pdf(
+                    company=row_data.get("Entreprise", ""),
+                    location=row_data.get("Lieu", "Paris, France"),
+                    body_text=edited_lm or " "
+                )
+
+                btn_save_lm, btn_dl_pdf = st.columns(2)
+                with btn_save_lm:
+                    if st.button("💾 Sauvegarder les modifs", key=f"save_lm_{selected_idx}", use_container_width=True):
+                        df_tracker.at[selected_idx, "Lettre de Motivation"] = edited_lm
+                        update_sheet_df(df_tracker)
+                        st.success("Modifications sauvegardées !")
+                        time.sleep(0.6)
+                        st.rerun()
+                with btn_dl_pdf:
+                    st.download_button(
+                        label="📥 Télécharger en PDF",
+                        data=pdf_bytes,
+                        file_name=pdf_filename,
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True
                     )
-
-                    safe_company = re.sub(r"[^a-zA-Z0-9_-]", "_", row_data.get("Entreprise", "Entreprise").strip()).strip("_")
-                    pdf_filename = f"LM_Pol_Cartron_{safe_company}.pdf"
-                    pdf_bytes = build_cover_letter_pdf(
-                        company=row_data.get("Entreprise", ""),
-                        location=row_data.get("Lieu", "Paris, France"),
-                        body_text=edited_lm
-                    )
-
-                    btn_save_lm, btn_dl_pdf = st.columns(2)
-                    with btn_save_lm:
-                        if st.button("💾 Sauvegarder les modifs", key=f"save_lm_{selected_idx}", use_container_width=True):
-                            df_tracker.at[selected_idx, "Lettre de Motivation"] = edited_lm
-                            update_sheet_df(df_tracker)
-                            st.success("Modifications sauvegardées !")
-                            time.sleep(0.6)
-                            st.rerun()
-                    with btn_dl_pdf:
-                        st.download_button(
-                            label="📥 Télécharger en PDF",
-                            data=pdf_bytes,
-                            file_name=pdf_filename,
-                            mime="application/pdf",
-                            type="primary",
-                            use_container_width=True
-                        )
-                else:
-                    if st.button("📝 Générer la lettre & le PDF", key="btn_lm", use_container_width=True):
-                        generer_lettre()
 
             # ========================================================
-            # 2. RÉSUMÉ DE L'OFFRE
+            # 2. RÉSUMÉ DE L'OFFRE (Affichage direct, sans bouton)
             # ========================================================
             current_resume = row_data.get("Résumé IA", "").strip()
-            with st.expander("✨ Résumé de l'offre", expanded=False):
+            with st.expander("✨ Résumé de l'offre", expanded=True):
                 if current_resume:
                     st.info(current_resume)
                 else:
-                    if st.button("✨ Générer le résumé", key="btn_res", use_container_width=True):
-                        with st.spinner("Analyse..."):
-                            try:
-                                prompt = (
-                                    "Agis comme un Product Manager Senior. Résume les missions de cette offre "
-                                    f"en exactement 3 points à puces clairs et concis.\nOffre : {row_data.get('Texte Offre')}"
-                                )
-                                df_tracker.at[selected_idx, "Résumé IA"] = call_gemini_with_fallback(prompt)
-                                update_sheet_df(df_tracker)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erreur Résumé : {e}")
+                    st.caption("Aucun résumé enregistré pour cette offre.")
 
             # ========================================================
-            # 3. PRÉPARATION ENTRETIEN
+            # 3. PRÉPARATION ENTRETIEN (Affichage direct, sans bouton)
             # ========================================================
             current_entretien = row_data.get("Entretien IA", "").strip()
-            ent_open_key = f"ent_is_open_{selected_idx}"
-            if ent_open_key not in st.session_state:
-                st.session_state[ent_open_key] = False
-
-            with st.container(border=True):
+            with st.expander("🎯 Préparation entretien", expanded=False):
                 if current_entretien:
-                    if not st.session_state[ent_open_key]:
-                        if st.button("🎯 Afficher la préparation entretien", key=f"open_ent_{selected_idx}", use_container_width=True):
-                            st.session_state[ent_open_key] = True
-                            st.rerun()
-                    else:
-                        st.success(current_entretien)
-                        _, col_close_ent = st.columns([4, 1])
-                        with col_close_ent:
-                            if st.button("⬆️ Refermer", key=f"close_ent_{selected_idx}", use_container_width=True):
-                                st.session_state[ent_open_key] = False
-                                st.rerun()
+                    st.success(current_entretien)
                 else:
-                    if st.button("🎯 Générer la préparation entretien", key="btn_ent", use_container_width=True):
-                        with st.spinner("Préparation..."):
-                            try:
-                                prompt = f"""
-                                Agis comme le Lead Product. Divise ta réponse en 2 :
-                                ### Fiche d'identité
-                                (Création, PDG, Siège, Employés, Concurrents, CA)
-                                ### Préparation (PM/PO)
-                                1. 3 valeurs clés.
-                                2. 3 questions techniques (Orientées Product).
-                                3. Mini-étude de cas.
-                                Offre : {row_data.get('Texte Offre')}
-                                """
-                                df_tracker.at[selected_idx, "Entretien IA"] = call_gemini_with_fallback(prompt)
-                                update_sheet_df(df_tracker)
-                                st.session_state[ent_open_key] = True
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erreur Entretien : {e}")
+                    st.caption("Aucune préparation d'entretien enregistrée pour cette offre.")
 
             # ========================================================
             # 4. TEXTE ORIGINAL DE L'OFFRE
@@ -759,7 +800,7 @@ with tab3:
         selected_sites = st.multiselect(
             "Sources web actives :",
             options=ALL_SITES,
-            default=cfg.get("sites", ["LinkedIn", "Welcome to the Jungle", "HelloWork"])
+            default=cfg.get("sites", ["LinkedIn", "Welcome to the Jungle", "HelloWork", "Indeed"])
         )
 
         nb_credits_est = len(selected_jobs) * len(selected_sites)
@@ -775,7 +816,7 @@ with tab3:
                 "loc": cfg_loc.strip() or "Paris",
                 "days": cfg_days,
                 "weekdays": selected_weekdays or ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"],
-                "sites": selected_sites or ["LinkedIn", "Welcome to the Jungle", "HelloWork"]
+                "sites": selected_sites or ["LinkedIn", "Welcome to the Jungle", "HelloWork", "Indeed"]
             }
             st.session_state.agent_cfg = updated_cfg
             save_feuille2_data(st.session_state.presets, updated_cfg)
@@ -792,7 +833,6 @@ with tab3:
             if col not in df_queue.columns:
                 df_queue[col] = ""
 
-        # Nettoyage des lignes vides
         valid_q = df_queue[df_queue["Entreprise"].str.strip() != ""]
         pending_df = valid_q[valid_q["Statut_File"].str.strip().isin(["", "En attente"])]
         rejected_df = valid_q[valid_q["Statut_File"].str.strip() == "Refusée"]
@@ -818,7 +858,7 @@ with tab3:
                             st.link_button("🔗 Voir", lien_offre, use_container_width=True)
 
                     with st.expander("📄 Voir / Modifier le texte de l'offre avant ajout", expanded=False):
-                        edited_q_text = st.text_area(
+                        st.text_area(
                             "Texte qui sera enregistré dans le tracker :",
                             value=q_row.get("Texte_Complet", ""),
                             height=180,
@@ -829,33 +869,27 @@ with tab3:
                     btn_accept, btn_reject = st.columns(2)
                     with btn_accept:
                         if st.button("✅ Ajouter au Tracker", key=f"acc_q_{q_idx}", type="primary", use_container_width=True):
-                            df_f1 = fetch_sheet_df()
-                            today_str = datetime.now().strftime("%d/%m/%Y")
-                            final_text = st.session_state.get(f"q_text_{q_idx}", q_row.get("Texte_Complet", ""))
+                            try:
+                                final_text = st.session_state.get(f"q_text_{q_idx}", q_row.get("Texte_Complet", ""))
+                                preset_meta = {
+                                    "Entreprise": q_row.get("Entreprise", "Inconnu"),
+                                    "Poste": q_row.get("Poste", "Inconnu"),
+                                    "Lieu": q_row.get("Lieu", "Paris"),
+                                    "Salaire": q_row.get("Salaire", "Inconnu")
+                                }
+                                process_and_save_offer_with_progress(
+                                    offer_text=final_text,
+                                    offer_link=lien_offre,
+                                    preset_meta=preset_meta,
+                                    step_label="Validée depuis la file Agent"
+                                )
 
-                            new_f1_row = {
-                                "Entreprise": q_row.get("Entreprise", "Inconnu"),
-                                "Poste": q_row.get("Poste", "Inconnu"),
-                                "Lien": lien_offre,
-                                "Lieu": q_row.get("Lieu", "Paris"),
-                                "Salaire": q_row.get("Salaire", "Inconnu"),
-                                "Date": today_str,
-                                "Statut": "À postuler",
-                                "Historique": json.dumps([{"date": today_str, "etape": "Validée depuis la file Agent"}], ensure_ascii=False),
-                                "Texte Offre": final_text,
-                                "Résumé IA": "",
-                                "Entretien IA": "",
-                                "Lettre de Motivation": ""
-                            }
-                            updated_f1 = pd.concat([df_f1, pd.DataFrame([new_f1_row])], ignore_index=True).fillna("")
-                            update_sheet_df(updated_f1)
-
-                            # Retire de la file d'attente (déjà présente dans Feuille 1 donc pas de doublon futur)
-                            updated_f3 = df_queue.drop(q_idx)
-                            update_sheet_df(updated_f3, worksheet="Feuille 3")
-                            st.success(f"{q_row.get('Entreprise')} ajoutée au tracker !")
-                            time.sleep(0.6)
-                            st.rerun()
+                                updated_f3 = df_queue.drop(q_idx)
+                                update_sheet_df(updated_f3, worksheet="Feuille 3")
+                                time.sleep(0.8)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur lors de l'ajout : {e}")
 
                     with btn_reject:
                         if st.button("❌ Refuser", key=f"rej_q_{q_idx}", use_container_width=True):

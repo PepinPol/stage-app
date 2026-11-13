@@ -41,6 +41,7 @@ SITE_QUERY_TEMPLATES = {
     "LinkedIn": 'site:linkedin.com/jobs/view "stage" "{job}" "{loc}"',
     "Welcome to the Jungle": 'site:welcometothejungle.com/fr/companies "stage" "{job}" "{loc}"',
     "HelloWork": 'site:hellowork.com/fr-fr/emplois "stage" "{job}" "{loc}"',
+"Indeed": 'site:fr.indeed.com/viewjob "stage" "{job}" "{loc}"',
     "Web global": '"offre de stage" "{job}" "{loc}" 2027'
 }
 
