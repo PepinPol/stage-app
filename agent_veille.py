@@ -25,14 +25,7 @@ creds = Credentials.from_service_account_info(GSHEETS_CREDS, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sh = gc.open_by_url(SPREADSHEET_URL)
 
-# --- LOGS DE DIAGNOSTIC GOOGLE SHEETS ---
-all_sheets = [ws.title for ws in sh.worksheets()]
-print(f"📂 Classeur connecté : '{sh.title}' (ID: {sh.id})")
-print(f"📑 Onglets disponibles : {all_sheets}")
-
-# Ciblage explicite par nom ("Feuille 1") au lieu de l'index 0
 sheet_offres = sh.worksheet("Feuille 1")
-print(f"🎯 Onglet cible sélectionné : '{sheet_offres.title}' (Lignes actuelles : {sheet_offres.row_count})")
 
 MODELS_FALLBACK = [
     "gemini-3.5-flash-lite",
@@ -71,20 +64,34 @@ def parse_json_response(raw_text: str):
     return json.loads(cleaned)
 
 
-def get_existing_offers() -> tuple[set, set]:
-    records = sheet_offres.get_all_records()
-    print(f"📊 {len(records)} offre(s) existante(s) lue(s) dans '{sheet_offres.title}'.")
+def get_existing_offers_and_next_row() -> tuple[set, set, int]:
+    """Lit toutes les lignes réelles (même masquées par un filtre) et trouve la vraie prochaine ligne vide."""
+    all_values = sheet_offres.get_all_values()
+    if not all_values:
+        return set(), set(), 2
+
+    headers = all_values[0]
+    idx_ent = headers.index("Entreprise") if "Entreprise" in headers else 0
+    idx_poste = headers.index("Poste") if "Poste" in headers else 1
+    idx_lien = headers.index("Lien") if "Lien" in headers else 2
+
     existing_links = set()
     existing_pairs = set()
-    for r in records:
-        lien = str(r.get("Lien", "")).strip().lower()
+    last_non_empty_row = 1
+
+    for row_idx, row in enumerate(all_values[1:], start=2):
+        if any(cell.strip() for cell in row):
+            last_non_empty_row = row_idx
+        ent = row[idx_ent].strip().lower() if len(row) > idx_ent else ""
+        poste = row[idx_poste].strip().lower() if len(row) > idx_poste else ""
+        lien = row[idx_lien].strip().lower() if len(row) > idx_lien else ""
+
         if lien:
             existing_links.add(lien)
-        ent = str(r.get("Entreprise", "")).strip().lower()
-        poste = str(r.get("Poste", "")).strip().lower()
         if ent and poste:
             existing_pairs.add((ent, poste))
-    return existing_links, existing_pairs
+
+    return existing_links, existing_pairs, last_non_empty_row + 1
 
 
 def search_jobs_tavily(job: str, loc: str) -> list[dict]:
@@ -157,10 +164,10 @@ def filter_batch_with_gemini(offers: list[dict]) -> list[dict]:
 
 
 def run_agent():
-    existing_links, existing_pairs = get_existing_offers()
+    existing_links, existing_pairs, next_row = get_existing_offers_and_next_row()
     today_str = datetime.now().strftime("%d/%m/%Y")
     headers = sheet_offres.row_values(1)
-    print(f"🧾 Colonnes détectées en ligne 1 : {headers}")
+    print(f"📍 Écriture prévue à partir de la ligne {next_row} dans '{sheet_offres.title}'.")
 
     all_candidates = []
     seen_batch_urls = set()
@@ -177,7 +184,7 @@ def run_agent():
     selected_offers = filter_batch_with_gemini(all_candidates)
     print(f"🎯 {len(selected_offers)} offre(s) retenue(s) par Gemini.")
 
-    added_count = 0
+    rows_to_insert = []
     for offer in selected_offers:
         ent = str(offer.get("Entreprise", "Inconnu")).strip()
         poste = str(offer.get("Poste", "Inconnu")).strip()
@@ -202,15 +209,20 @@ def run_agent():
         }
 
         ordered_row = [row_dict.get(col, "") for col in headers]
-        res_append = sheet_offres.append_row(ordered_row, value_input_option="USER_ENTERED")
-        updated_range = res_append.get("updates", {}).get("updatedRange", "inconnu")
+        rows_to_insert.append(ordered_row)
 
         existing_links.add(url.lower())
         existing_pairs.add((ent.lower(), poste.lower()))
-        added_count += 1
-        print(f"✅ Ajoutée à la plage [{updated_range}] : {ent} - {poste}")
+        print(f"✅ Préparée pour ligne {next_row + len(rows_to_insert) - 1} : {ent} - {poste}")
 
-    print(f"🏁 Terminé ! {added_count} nouvelle(s) offre(s) ajoutée(s) dans '{sheet_offres.title}'.")
+    # Écriture en un seul bloc (1 seul appel API Google Sheets, zéro écrasement)
+    if rows_to_insert:
+        end_row = next_row + len(rows_to_insert) - 1
+        range_label = f"A{next_row}:R{end_row}"
+        sheet_offres.update(range_name=range_label, values=rows_to_insert, value_input_option="USER_ENTERED")
+        print(f"🏁 Terminé ! {len(rows_to_insert)} offre(s) écrite(s) sur la plage {range_label}.")
+    else:
+        print("🏁 Terminé ! Aucune nouvelle offre à ajouter aujourd'hui.")
 
 
 if __name__ == "__main__":
