@@ -77,7 +77,7 @@ def infer_main_status(history_list: list, current_status: str) -> str:
         return "À postuler"
     return current_status
 
-# --- GÉNÉRATEUR PDF LETTRE DE MOTIVATION (ATS-FRIENDLY) ---
+# --- GÉNÉRATEUR PDF LETTRE DE MOTIVATION (FORMAT A4 GOOGLE DOCS) ---
 def sanitize_pdf_text(text: str) -> str:
     """Remplace les caractères Unicode spéciaux pour compatibilité Helvetica standard."""
     replacements = {
@@ -96,40 +96,40 @@ def sanitize_pdf_text(text: str) -> str:
     return text.encode("latin-1", "replace").decode("latin-1")
 
 def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes:
-    """Génère un PDF A4 propre (1 page) façon Google Docs avec bloc destinataire aligné à droite."""
-    pdf = FPDF(format="A4", unit="mm")
-    pdf.set_margins(left=20, top=16, right=20)
-    pdf.set_auto_page_break(auto=True, margin=15)
+    """Génère un PDF A4 standard (210x297 mm) avec marges Google Docs (25 mm) sur 1 page."""
+    pdf = FPDF(orientation="P", format="A4", unit="mm")
+    pdf.set_margins(left=25, top=22, right=25)
+    pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
     # 1. En-tête Candidat (aligné à gauche)
-    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(20, 20, 20)
-    pdf.cell(0, 6.5, sanitize_pdf_text("Pol CARTRON"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, sanitize_pdf_text("Pol CARTRON"), new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(60, 60, 60)
-    pdf.cell(0, 5, sanitize_pdf_text("Dual degree Engineering/Management student"), new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 5, sanitize_pdf_text("INSA Rennes / Audencia"), new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 5, sanitize_pdf_text("pol.cartron@gmail.com | (+33) 7 83 86 71 64"), new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(5)
+    pdf.cell(0, 4.8, sanitize_pdf_text("Dual degree Engineering/Management student"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 4.8, sanitize_pdf_text("INSA Rennes / Audencia"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 4.8, sanitize_pdf_text("pol.cartron@gmail.com | (+33) 7 83 86 71 64"), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
 
     # 2. Bloc Destinataire & Date (aligné tout à droite)
     pdf.set_text_color(20, 20, 20)
     pdf.set_font("Helvetica", "B", 10.5)
     clean_company = sanitize_pdf_text(company.strip() if company and company.strip().lower() != "inconnu" else "")
     if clean_company:
-        pdf.cell(0, 5.2, clean_company, align="R", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 5, clean_company, align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 10)
     clean_loc = sanitize_pdf_text(location.strip() if location and location.strip().lower() != "inconnu" else "Paris, France")
     if "france" not in clean_loc.lower() and "paris" in clean_loc.lower():
         clean_loc = f"{clean_loc}, France"
-    pdf.cell(0, 5.2, clean_loc, align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, clean_loc, align="R", new_x="LMARGIN", new_y="NEXT")
 
     today_str = datetime.now().strftime("%d/%m/%Y")
-    pdf.cell(0, 5.2, today_str, align="R", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(6)
+    pdf.cell(0, 5, today_str, align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
 
     # 3. Corps de la lettre
     clean_body = body_text.replace("**", "").strip()
@@ -141,17 +141,17 @@ def build_cover_letter_pdf(company: str, location: str, body_text: str) -> bytes
             continue
         if p_clean.startswith("Subject:"):
             pdf.set_font("Helvetica", "B", 10.5)
-            pdf.multi_cell(0, 5.2, sanitize_pdf_text(p_clean))
-            pdf.ln(3.5)
+            pdf.multi_cell(0, 5, sanitize_pdf_text(p_clean))
+            pdf.ln(3)
         elif p_clean in ["Pol CARTRON", "Sincerely,"]:
             pdf.set_font("Helvetica", "B" if p_clean == "Pol CARTRON" else "", 10.5)
-            pdf.multi_cell(0, 5.2, sanitize_pdf_text(p_clean))
+            pdf.multi_cell(0, 5, sanitize_pdf_text(p_clean))
             if p_clean == "Sincerely,":
-                pdf.ln(3)
+                pdf.ln(2.5)
         else:
-            pdf.set_font("Helvetica", "", 10.2)
-            pdf.multi_cell(0, 5.0, sanitize_pdf_text(p_clean))
-            pdf.ln(3.2)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 4.8, sanitize_pdf_text(p_clean))
+            pdf.ln(3)
 
     return bytes(pdf.output())
 
@@ -606,23 +606,28 @@ Pol CARTRON"""
                                 st.error(f"Erreur Résumé : {e}")
 
             # ========================================================
-            # 3. PRÉPARATION ENTRETIEN (PLEINE LARGEUR + BOUTON REFERMER)
+            # 3. PRÉPARATION ENTRETIEN (CONTRÔLE PAR ÉTAT + BOUTON REFERMER)
             # ========================================================
             current_entretien = row_data.get('Entretien IA', '').strip()
-            ent_exp_key = f"ent_expanded_{selected_idx}"
-            if ent_exp_key not in st.session_state:
-                st.session_state[ent_exp_key] = False
+            ent_open_key = f"ent_is_open_{selected_idx}"
+            if ent_open_key not in st.session_state:
+                st.session_state[ent_open_key] = False
 
-            with st.expander("🎯 Préparation Entretien", expanded=st.session_state[ent_exp_key]):
+            with st.container(border=True):
                 if current_entretien:
-                    st.success(current_entretien)
-                    _, col_close_ent = st.columns([4, 1])
-                    with col_close_ent:
-                        if st.button("⬆️ Refermer", key=f"close_ent_{selected_idx}", use_container_width=True):
-                            st.session_state[ent_exp_key] = False
+                    if not st.session_state[ent_open_key]:
+                        if st.button("🎯 Afficher la préparation entretien", key=f"open_ent_{selected_idx}", use_container_width=True):
+                            st.session_state[ent_open_key] = True
                             st.rerun()
+                    else:
+                        st.success(current_entretien)
+                        _, col_close_ent = st.columns([4, 1])
+                        with col_close_ent:
+                            if st.button("⬆️ Refermer", key=f"close_ent_{selected_idx}", use_container_width=True):
+                                st.session_state[ent_open_key] = False
+                                st.rerun()
                 else:
-                    if st.button("🎯 Générer la préparation", key="btn_ent", use_container_width=True):
+                    if st.button("🎯 Générer la préparation entretien", key="btn_ent", use_container_width=True):
                         with st.spinner("Préparation..."):
                             try:
                                 prompt = f"""
@@ -639,7 +644,7 @@ Pol CARTRON"""
                                 df_tracker.at[selected_idx, 'Entretien IA'] = result
                                 conn_gsheets.update(data=df_tracker)
                                 st.cache_data.clear()
-                                st.session_state[ent_exp_key] = True
+                                st.session_state[ent_open_key] = True
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erreur Entretien : {e}")
