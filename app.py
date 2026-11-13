@@ -6,6 +6,7 @@ import google.generativeai as genai
 import json
 import time
 import re
+import hashlib
 from datetime import datetime
 from fpdf import FPDF
 
@@ -100,6 +101,12 @@ def parse_llm_json(raw_text: str) -> dict:
     return json.loads(cleaned)
 
 
+def make_offer_uid(row: pd.Series) -> str:
+    """Génère un identifiant unique et stable propre à l'annonce, indépendant de son numéro de ligne."""
+    raw = f"{row.get('Lien', '').strip()}_{row.get('Entreprise', '').strip()}_{row.get('Poste', '').strip()}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+
+
 # ==========================================
 # GÉNÉRATION IA DES 3 LIVRABLES (RÉSUMÉ / ENTRETIEN / LM)
 # ==========================================
@@ -167,7 +174,6 @@ def process_and_save_offer_with_progress(
     """Exécute tout le pipeline d'ajout avec suivi en temps réel et barre de pourcentage."""
     progress_bar = st.progress(0, text="0% — Initialisation...")
     with st.status("Traitement de l'offre en cours...", expanded=True) as status_box:
-        # Étape 1 : Extraction des métadonnées (si ajout manuel)
         if preset_meta is None:
             progress_bar.progress(10, text="10% — Extraction de l'entreprise, du poste et du salaire...")
             st.write("🔍 Lecture et structuration des informations de l'annonce...")
@@ -185,7 +191,6 @@ def process_and_save_offer_with_progress(
         lieu = meta.get("Lieu", "Paris")
         salaire = meta.get("Salaire", "Inconnu")
 
-        # Étape 2 : Résumé IA
         progress_bar.progress(35, text="35% — Génération du résumé des missions...")
         st.write("✨ Rédaction du résumé en 3 points clés...")
         try:
@@ -193,7 +198,6 @@ def process_and_save_offer_with_progress(
         except Exception as e:
             resume_ia = f"Erreur génération résumé : {e}"
 
-        # Étape 3 : Préparation Entretien
         progress_bar.progress(60, text="60% — Préparation de la fiche entreprise & entretien...")
         st.write("🎯 Analyse de l'entreprise et questions d'entretien...")
         try:
@@ -201,7 +205,6 @@ def process_and_save_offer_with_progress(
         except Exception as e:
             entretien_ia = f"Erreur génération entretien : {e}"
 
-        # Étape 4 : Lettre de Motivation
         progress_bar.progress(82, text="82% — Rédaction de la lettre de motivation (EN)...")
         st.write("📝 Rédaction de la lettre de motivation sur-mesure...")
         try:
@@ -209,7 +212,6 @@ def process_and_save_offer_with_progress(
         except Exception as e:
             lm_ia = f"Erreur génération LM : {e}"
 
-        # Étape 5 : Sauvegarde Google Sheets
         progress_bar.progress(95, text="95% — Enregistrement dans Google Sheets...")
         st.write("💾 Sauvegarde dans la base de données...")
         df_current = fetch_sheet_df()
@@ -884,6 +886,8 @@ with tab3:
             st.info("Aucune nouvelle offre en attente pour le moment. Reviens après le prochain passage de l'agent !")
         else:
             for q_idx, q_row in pending_df.iterrows():
+                offer_uid = make_offer_uid(q_row)
+                text_widget_key = f"q_text_{offer_uid}"
                 score_txt = q_row.get("Score", "").strip()
                 score_badge = f" | ⭐ **{score_txt}/10**" if score_txt else ""
                 date_ajout = q_row.get("Date_Ajout", "")
@@ -903,15 +907,15 @@ with tab3:
                             "Texte qui sera enregistré dans le tracker :",
                             value=q_row.get("Texte_Complet", ""),
                             height=180,
-                            key=f"q_text_{q_idx}",
+                            key=text_widget_key,
                             label_visibility="collapsed"
                         )
 
                     btn_accept, btn_reject = st.columns(2)
                     with btn_accept:
-                        if st.button("✅ Ajouter au Tracker", key=f"acc_q_{q_idx}", type="primary", use_container_width=True):
+                        if st.button("✅ Ajouter au Tracker", key=f"acc_{offer_uid}", type="primary", use_container_width=True):
                             try:
-                                final_text = st.session_state.get(f"q_text_{q_idx}", q_row.get("Texte_Complet", ""))
+                                final_text = st.session_state.get(text_widget_key, q_row.get("Texte_Complet", ""))
                                 preset_meta = {
                                     "Entreprise": q_row.get("Entreprise", "Inconnu"),
                                     "Poste": q_row.get("Poste", "Inconnu"),
@@ -927,15 +931,17 @@ with tab3:
 
                                 updated_f3 = df_queue.drop(q_idx)
                                 update_sheet_df(updated_f3, worksheet="Feuille 3")
+                                st.session_state.pop(text_widget_key, None)
                                 time.sleep(0.8)
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erreur lors de l'ajout : {e}")
 
                     with btn_reject:
-                        if st.button("❌ Refuser", key=f"rej_q_{q_idx}", use_container_width=True):
+                        if st.button("❌ Refuser", key=f"rej_{offer_uid}", use_container_width=True):
                             df_queue.at[q_idx, "Statut_File"] = "Refusée"
                             update_sheet_df(df_queue, worksheet="Feuille 3")
+                            st.session_state.pop(text_widget_key, None)
                             st.rerun()
 
         st.markdown("---")
@@ -946,6 +952,7 @@ with tab3:
                 st.caption("Aucune offre refusée pour le moment.")
             else:
                 for r_idx, r_row in rejected_df.iterrows():
+                    rej_uid = make_offer_uid(r_row)
                     rc1, rc2, rc3 = st.columns([3, 1, 1.3], vertical_alignment="center")
                     with rc1:
                         st.markdown(f"**{r_row.get('Entreprise')}** — {r_row.get('Poste')}")
@@ -954,7 +961,7 @@ with tab3:
                         if r_row.get("Lien", "").strip():
                             st.link_button("🔗", r_row.get("Lien", "").strip(), use_container_width=True)
                     with rc3:
-                        if st.button("↩️ Repêcher", key=f"restore_q_{r_idx}", use_container_width=True):
+                        if st.button("↩️ Repêcher", key=f"restore_{rej_uid}", use_container_width=True):
                             df_queue.at[r_idx, "Statut_File"] = "En attente"
                             update_sheet_df(df_queue, worksheet="Feuille 3")
                             st.rerun()
